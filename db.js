@@ -81,22 +81,30 @@ async function init() {
 
     // Migration: ensure new movie metadata columns exist (for older DBs)
     try {
-      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre TEXT`);
+      await pgPool.query(
+        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre TEXT`,
+      );
     } catch (err) {
       // ignore
     }
     try {
-      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS year TEXT`);
+      await pgPool.query(
+        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS year TEXT`,
+      );
     } catch (err) {
       // ignore
     }
     try {
-      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS language TEXT`);
+      await pgPool.query(
+        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS language TEXT`,
+      );
     } catch (err) {
       // ignore
     }
     try {
-      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS duration TEXT`);
+      await pgPool.query(
+        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS duration TEXT`,
+      );
     } catch (err) {
       // ignore
     }
@@ -251,10 +259,11 @@ async function addMovie(
   year = null,
   language = null,
   duration = null,
+  channelMessageId = null,
 ) {
   if (usePostgres) {
     await pgPool.query(
-      `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (code) DO NOTHING`,
+      `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (code) DO NOTHING`,
       [
         code,
         name,
@@ -266,12 +275,13 @@ async function addMovie(
         year || null,
         language || null,
         duration || null,
+        channelMessageId || null,
       ],
     );
     return { success: true };
   }
   const stmt = sqliteDb.prepare(
-    `INSERT OR IGNORE INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   return stmt.run(
     code,
@@ -284,6 +294,7 @@ async function addMovie(
     year || null,
     language || null,
     duration || null,
+    channelMessageId || null,
   );
 }
 

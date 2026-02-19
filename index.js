@@ -92,7 +92,12 @@ async function saveMovieWithPoster(
   const uploadedBy = msgOrQuery.from.username || msgOrQuery.from.first_name;
   const caption = `📽️ <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>\n🎭 Janr: ${movieGenre || "Noma'lum"}\n📅 Yili: ${movieYear || "Noma'lum"}\n🌍 Tili: ${movieLanguage || "Noma'lum"}\n⏱️ Davomiyligi: ${movieDuration || "Noma'lum"}\n📤 Yuklagan: ${uploadedBy}\n⏰ Vaqti: ${new Date().toLocaleString("uz-UZ")}`;
 
-  const sendMethod = fileType === "video" ? "sendVideo" : fileType === "photo" ? "sendPhoto" : "sendDocument";
+  const sendMethod =
+    fileType === "video"
+      ? "sendVideo"
+      : fileType === "photo"
+        ? "sendPhoto"
+        : "sendDocument";
 
   try {
     const sendOptions = {
@@ -111,7 +116,7 @@ async function saveMovieWithPoster(
       sendOptions,
     );
 
-    // Kinoni DB ga saqlash
+    // Kinoni DB ga saqlash (channel message id ham saqlaymiz)
     await addMovie(
       movieCode,
       movieName,
@@ -123,6 +128,7 @@ async function saveMovieWithPoster(
       movieYear,
       movieLanguage,
       movieDuration,
+      sentMessage.message_id,
     );
 
     let successMsg = `✨ Kino muvaffaqiyatli saqlandi!\n\n🎬 <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>`;
@@ -198,7 +204,9 @@ async function getSubscriptionButtons() {
     ]);
   }
 
-  buttons.push([{ text: "✅ Tekshirish", callback_data: "check_subscription" }]);
+  buttons.push([
+    { text: "✅ Tekshirish", callback_data: "check_subscription" },
+  ]);
   return buttons;
 }
 
@@ -324,7 +332,9 @@ bot.on("message", async (msg) => {
 
         const options = {
           reply_markup: {
-            inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: sourceView }]],
+            inline_keyboard: [
+              [{ text: "🔙 Orqaga", callback_data: sourceView }],
+            ],
           },
         };
 
@@ -343,7 +353,9 @@ bot.on("message", async (msg) => {
       console.error("Channel add error:", err);
       const options = {
         reply_markup: {
-          inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: "subscription_manage" }]],
+          inline_keyboard: [
+            [{ text: "🔙 Orqaga", callback_data: "subscription_manage" }],
+          ],
         },
       };
 
@@ -380,6 +392,64 @@ bot.on("message", async (msg) => {
       `✅ Admin muvaffaqiyatli qo'shildi! (ID: <code>${adminIdToAdd}</code>)\n\nTuri: ${roleText}`,
       { parse_mode: "HTML" },
     );
+    return;
+  } else if (userState && userState.status === "waiting_delete_code") {
+    // Kino o'chirish uchun kodni qabul qilish (faqat Main yoki Head admin)
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = String(userId) === String(ADMIN_USER_ID);
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasDeleteAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasDeleteAccess) {
+      bot.sendMessage(chatId, "❌ Sizda bu amalni bajarish huquqi yo'q!");
+      delete userStates[userId];
+      return;
+    }
+
+    const movieCode = (msg.text || "").toUpperCase().trim();
+    if (!movieCode) {
+      bot.sendMessage(
+        chatId,
+        "❌ Iltimos o'chirish uchun kino kodini yuboring.",
+      );
+      return;
+    }
+
+    const movie = await getMovieByCode(movieCode);
+    if (!movie) {
+      bot.sendMessage(chatId, `❌ Kod <code>${movieCode}</code> topilmadi.`, {
+        parse_mode: "HTML",
+      });
+      return;
+    }
+
+    // Try to delete channel message if we have stored message id
+    try {
+      if (movie.channel_message_id) {
+        await bot.deleteMessage(MOVIES_CHANNEL_ID, movie.channel_message_id);
+      }
+    } catch (err) {
+      console.error(
+        "Channel message delete error:",
+        err && err.message ? err.message : err,
+      );
+      // continue to delete from DB even if channel delete failed
+    }
+
+    const res = await deleteMovieByCode(movieCode);
+    const deleted = (res && (res.changes > 0 || res.rowCount > 0)) || false;
+
+    if (deleted) {
+      bot.sendMessage(
+        chatId,
+        `✅ Kino o'chirildi: <b>${movie.name}</b>\n🔑 Kod: <code>${movie.code}</code>`,
+        { parse_mode: "HTML" },
+      );
+    } else {
+      bot.sendMessage(chatId, "❌ Kino o'chirilmadi — ichki xato yuz berdi.");
+    }
+
+    delete userStates[userId];
     return;
   }
 
@@ -426,7 +496,9 @@ bot.on("message", async (msg) => {
     const isHeadAdmin = adminRole === "katta_admin";
     const isSmallAdmin = adminRole === "kichkina_admin";
 
-    console.log(`Admin check: userId=${userId}, ADMIN_USER_ID=${ADMIN_USER_ID}, isMainAdmin=${isMainAdmin}`);
+    console.log(
+      `Admin check: userId=${userId}, ADMIN_USER_ID=${ADMIN_USER_ID}, isMainAdmin=${isMainAdmin}`,
+    );
 
     if (!isMainAdmin && !isHeadAdmin && !isSmallAdmin) {
       bot.sendMessage(chatId, "❌ Notogri buydaomish yoki tilla topildi!");
@@ -467,7 +539,10 @@ bot.on("message", async (msg) => {
             ],
             [
               { text: "👤 Admin boshqaruvi", callback_data: "admin_manage" },
-              { text: "🔐 Majburiy obuna", callback_data: "subscription_manage" },
+              {
+                text: "🔐 Majburiy obuna",
+                callback_data: "subscription_manage",
+              },
             ],
             [{ text: "❌ Yopish", callback_data: "close_panel" }],
           ],
@@ -667,8 +742,11 @@ bot.on("message", async (msg) => {
 
     if (found) {
       const sendMethod =
-        found.file_type === "video" ? "sendVideo" : 
-        found.file_type === "photo" ? "sendPhoto" : "sendDocument";
+        found.file_type === "video"
+          ? "sendVideo"
+          : found.file_type === "photo"
+            ? "sendPhoto"
+            : "sendDocument";
 
       const sendOptions = {
         caption: `🎬 <b>${found.name}</b>\n🔑 Kod: <code>${found.code}</code>\n🎭 Janr: ${found.genre || "Noma'lum"}\n📅 Yili: ${found.year || "Noma'lum"}\n🌍 Tili: ${found.language || "Noma'lum"}\n⏱️ Davomiyligi: ${found.duration || "Noma'lum"}\n⏰ Sana: ${new Date(found.uploaded_at).toLocaleString("uz-UZ")}`,
@@ -762,7 +840,9 @@ bot.on("callback_query", async (query) => {
     const isHeadAdmin = adminRole === "katta_admin";
     const isSmallAdmin = adminRole === "kichkina_admin";
 
-    console.log(`Admin check callback: userId=${userId}, ADMIN_USER_ID=${ADMIN_USER_ID}, isMainAdmin=${isMainAdmin}`);
+    console.log(
+      `Admin check callback: userId=${userId}, ADMIN_USER_ID=${ADMIN_USER_ID}, isMainAdmin=${isMainAdmin}`,
+    );
 
     if (!isMainAdmin && !isHeadAdmin && !isSmallAdmin) {
       bot.answerCallbackQuery(query.id, {
@@ -808,7 +888,10 @@ bot.on("callback_query", async (query) => {
             ],
             [
               { text: "👤 Admin boshqaruvi", callback_data: "admin_manage" },
-              { text: "🔐 Majburiy obuna", callback_data: "subscription_manage" },
+              {
+                text: "🔐 Majburiy obuna",
+                callback_data: "subscription_manage",
+              },
             ],
             [{ text: "❌ Yopish", callback_data: "close_panel" }],
           ],
@@ -858,7 +941,7 @@ bot.on("callback_query", async (query) => {
       },
     );
   } else if (query.data === "delete_movie") {
-    // Kino o'chirish - Admin check (only main or head admin)
+    // Kino o'chirish — faqat Main yoki Head adminlar uchun
     const adminRole = await getAdminRole(userId);
     const isMainAdmin = userId === ADMIN_USER_ID;
     const isHeadAdmin = adminRole === "katta_admin";
@@ -873,6 +956,8 @@ bot.on("callback_query", async (query) => {
     }
 
     const movies = await getAllMovies();
+
+    // Show simple list with codes (no per-item delete buttons) and ask for code
     if (movies.length === 0) {
       const options = {
         reply_markup: {
@@ -881,7 +966,6 @@ bot.on("callback_query", async (query) => {
           ],
         },
       };
-
       bot.editMessageText("📭 Hozircha kinolar yo'q.", {
         chat_id: chatId,
         message_id: query.message.message_id,
@@ -890,30 +974,29 @@ bot.on("callback_query", async (query) => {
       return;
     }
 
-    // Kinolar ro'yxati with delete buttons
-    let movieList = "🗑️ <b>Kino o'chirish:</b>\n\n";
-    const buttons = [];
-
-    movies.forEach((movie) => {
-      buttons.push([
-        {
-          text: `❌ ${movie.name}`,
-          callback_data: `del_${movie.code}`,
-        },
-      ]);
+    let movieList = "🗑️ <b>Kino o'chirish</b> — Kino kodini yuboring:\n\n";
+    movies.forEach((m, idx) => {
+      movieList += `${idx + 1}. <b>${m.name}</b> — 🔑 <code>${m.code}</code>\n`;
     });
-
-    buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_panel" }]);
+    movieList +=
+      "\n🔎 Iltimos o'chirmoqchi bo'lgan kinoning `kod`ini yuboring.";
 
     const options = {
       reply_markup: {
-        inline_keyboard: buttons,
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
+        ],
       },
+      parse_mode: "HTML",
     };
 
-    bot.editMessageText("O'chirish uchun kino nomini bosing:", {
+    // Set state so next text message is treated as delete-code
+    userStates[userId] = { status: "waiting_delete_code" };
+
+    bot.editMessageText(movieList, {
       chat_id: chatId,
       message_id: query.message.message_id,
+      parse_mode: "HTML",
       ...options,
     });
   } else if (query.data === "list_movies") {
@@ -1286,12 +1369,13 @@ bot.on("callback_query", async (query) => {
       msg += "💡 Kanal qo'shish uchun \"➕ Kanal qo'shish\" tugmasini bosing";
     } else {
       channels.forEach((ch, i) => {
-        const displayName = ch.channel_title || ch.channel_username || ch.channel_id;
+        const displayName =
+          ch.channel_title || ch.channel_username || ch.channel_id;
         msg += `${i + 1}. <b>${displayName}</b>\n   🔑 ID: <code>${ch.channel_id}</code>\n`;
         if (ch.channel_username) {
           msg += `   🔗 @${ch.channel_username}\n`;
         }
-        msg += '\n';
+        msg += "\n";
       });
       msg += `\n💡 Foydalanuvchilar bu kanallarga obuna bo'lmaguncha bot-dan foydalana olmaydi`;
     }
