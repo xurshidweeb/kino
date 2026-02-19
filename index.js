@@ -514,7 +514,7 @@ bot.on("message", async (msg) => {
         reply_markup: {
           inline_keyboard: [
             [{ text: "🎬 Kino qo'shish", callback_data: "upload_movie" }],
-            [{ text: "❌ Yopish", callback_data: "close_panel" }],
+            [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
           ],
         },
       };
@@ -860,7 +860,7 @@ bot.on("callback_query", async (query) => {
         reply_markup: {
           inline_keyboard: [
             [{ text: "🎬 Kino qo'shish", callback_data: "upload_movie" }],
-            [{ text: "❌ Yopish", callback_data: "close_panel" }],
+            [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
           ],
         },
       };
@@ -928,6 +928,7 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
+          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1042,6 +1043,7 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
+          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1072,6 +1074,7 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
+          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1159,6 +1162,7 @@ bot.on("callback_query", async (query) => {
             { text: "🔵 Kichkina Admin", callback_data: "admin_type_kichkina" },
           ],
           [{ text: "🔙 Orqaga", callback_data: "admin_manage" }],
+          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1208,6 +1212,7 @@ bot.on("callback_query", async (query) => {
     });
 
     buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_manage" }]);
+    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
 
     const options = {
       reply_markup: {
@@ -1260,6 +1265,7 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_manage" }],
+          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1284,6 +1290,7 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_manage" }],
+          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1380,6 +1387,9 @@ bot.on("callback_query", async (query) => {
       msg += `\n💡 Foydalanuvchilar bu kanallarga obuna bo'lmaguncha bot-dan foydalana olmaydi`;
     }
 
+    // Bosh menu tugmasini qo'shish
+    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
+
     const options = {
       reply_markup: {
         inline_keyboard: buttons,
@@ -1451,6 +1461,7 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "subscription_manage" }],
+          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1478,6 +1489,7 @@ bot.on("callback_query", async (query) => {
     });
 
     buttons.push([{ text: "🔙 Orqaga", callback_data: "subscription_manage" }]);
+    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
 
     const options = {
       reply_markup: {
@@ -1512,6 +1524,7 @@ bot.on("callback_query", async (query) => {
     }
 
     buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_panel" }]);
+    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
 
     let msg = "🔐 <b>Majburiy obuna boshqaruvi</b>\n\n";
     msg += `Hozirda ${channels.length}ta kanal majburiy:\n\n`;
