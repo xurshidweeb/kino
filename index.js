@@ -15,6 +15,9 @@ const {
   addAdmin,
   removeAdmin,
   getAllAdmins,
+  addChannel,
+  getAllChannels,
+  deleteChannel,
   close,
 } = require("./db");
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -81,11 +84,15 @@ async function saveMovieWithPoster(
   msgOrQuery,
   chatId,
   userId,
+  movieGenre = null,
+  movieYear = null,
+  movieLanguage = null,
+  movieDuration = null,
 ) {
   const uploadedBy = msgOrQuery.from.username || msgOrQuery.from.first_name;
-  const caption = `📽️ <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>\n📤 Yuklagan: ${uploadedBy}\n⏰ Vaqti: ${new Date().toLocaleString("uz-UZ")}`;
+  const caption = `📽️ <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>\n🎭 Janr: ${movieGenre || "Noma'lum"}\n📅 Yili: ${movieYear || "Noma'lum"}\n🌍 Tili: ${movieLanguage || "Noma'lum"}\n⏱️ Davomiyligi: ${movieDuration || "Noma'lum"}\n📤 Yuklagan: ${uploadedBy}\n⏰ Vaqti: ${new Date().toLocaleString("uz-UZ")}`;
 
-  const sendMethod = fileType === "video" ? "sendVideo" : "sendDocument";
+  const sendMethod = fileType === "video" ? "sendVideo" : fileType === "photo" ? "sendPhoto" : "sendDocument";
 
   try {
     const sendOptions = {
@@ -112,6 +119,10 @@ async function saveMovieWithPoster(
       fileType,
       posterFileId || null,
       userId,
+      movieGenre,
+      movieYear,
+      movieLanguage,
+      movieDuration,
     );
 
     let successMsg = `✨ Kino muvaffaqiyatli saqlandi!\n\n🎬 <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>`;
@@ -134,6 +145,63 @@ async function saveMovieWithPoster(
   }
 }
 
+// Helper: Check if user is subscribed to all required channels
+async function isSubscribedToAllChannels(userId) {
+  const channels = await getAllChannels();
+  if (channels.length === 0) return true; // No channels required
+
+  try {
+    for (const channel of channels) {
+      const member = await bot.getChatMember(channel.channel_id, userId);
+      const status = member.status;
+      if (
+        status !== "member" &&
+        status !== "administrator" &&
+        status !== "creator"
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch (err) {
+    console.error("Channel check error:", err.message);
+    return false;
+  }
+}
+
+// Helper: Get subscription buttons
+async function getSubscriptionButtons() {
+  const channels = await getAllChannels();
+  if (channels.length === 0) return [];
+
+  const buttons = [];
+  for (const ch of channels) {
+    const channelId = ch.channel_id;
+    const username = ch.channel_username;
+    const title = ch.channel_title || username || channelId;
+
+    let link;
+    if (username) {
+      link = `https://t.me/${username}`;
+    } else if (String(channelId).startsWith("-100")) {
+      link = `https://t.me/c/${String(channelId).slice(4)}`;
+    } else {
+      // fallback: no public link
+      link = `https://t.me/c/${String(channelId).replace(/[^0-9]/g, "")}`;
+    }
+
+    buttons.push([
+      {
+        text: `📢 ${title}`,
+        url: link,
+      },
+    ]);
+  }
+
+  buttons.push([{ text: "✅ Tekshirish", callback_data: "check_subscription" }]);
+  return buttons;
+}
+
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const userId = String(msg.from.id);
@@ -142,6 +210,36 @@ bot.on("message", async (msg) => {
   // Foydalanuvchini DB ga qo'shish
   await addUser(userId, msg.from.first_name, msg.from.username || "");
   await updateLastActivity(userId);
+
+  // Mandatory subscription check (applies to all non-admin interactions)
+  // Allow admins to use the bot even if they're not subscribed.
+  const adminRoleForSubCheck = await getAdminRole(userId);
+  const isMainAdminForSubCheck = String(userId) === String(ADMIN_USER_ID);
+  const isAdminForSubCheck =
+    isMainAdminForSubCheck ||
+    adminRoleForSubCheck === "katta_admin" ||
+    adminRoleForSubCheck === "kichkina_admin";
+
+  const isStart = msg.text === "/start";
+  const isPanel = msg.text === "/panel";
+  const isMyId = msg.text === "/myid";
+
+  if (!isAdminForSubCheck && !isStart && !isPanel && !isMyId) {
+    const isSubbed = await isSubscribedToAllChannels(userId);
+    if (!isSubbed) {
+      const subButtons = await getSubscriptionButtons();
+      await bot.sendMessage(
+        chatId,
+        "⚠️ Bot-ni ishlatish uchun barcha kanallarga obuna bo'lishingiz kerak:",
+        {
+          reply_markup: { inline_keyboard: subButtons },
+          parse_mode: "HTML",
+        },
+      );
+      delete userStates[userId];
+      return;
+    }
+  }
 
   // Admin komandalar
   if (msg.text && msg.text.startsWith("/")) {
@@ -206,6 +304,57 @@ bot.on("message", async (msg) => {
 
     delete userStates[userId];
     return;
+  } else if (userState && userState.status === "waiting_channel_link") {
+    // Kanal linkini qabul qilish
+    try {
+      // Best option: user forwards a post/message from the channel
+      // This works for private/public channels without relying on getChat(username)
+      if (msg.forward_from_chat && msg.forward_from_chat.type === "channel") {
+        const channelId = String(msg.forward_from_chat.id);
+        const channelUsername = msg.forward_from_chat.username
+          ? String(msg.forward_from_chat.username)
+          : null;
+        const channelTitle =
+          msg.forward_from_chat.title || channelUsername || channelId;
+
+        await addChannel(channelId, channelUsername, channelTitle);
+
+        const sourceView = userState.sourceView || "subscription_manage";
+        delete userStates[userId];
+
+        const options = {
+          reply_markup: {
+            inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: sourceView }]],
+          },
+        };
+
+        await bot.sendMessage(
+          chatId,
+          `✅ Kanal muvaffaqiyatli qo'shildi!\n\n📢 <b>${channelTitle}</b>\n🔑 ID: <code>${channelId}</code>${channelUsername ? `\n🔗 @${channelUsername}` : ""}`,
+          { parse_mode: "HTML", reply_markup: options.reply_markup },
+        );
+        return;
+      }
+
+      throw new Error(
+        "Kanal qo'shish uchun kanaldan bitta post/xabarni botga FORWARD qiling.",
+      );
+    } catch (err) {
+      console.error("Channel add error:", err);
+      const options = {
+        reply_markup: {
+          inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: "subscription_manage" }]],
+        },
+      };
+
+      await bot.sendMessage(
+        chatId,
+        `❌ Kanal qo'shishda xato! Iltimos to'g'ri link yuboring.\n\nXato: ${err.message}`,
+        { parse_mode: "HTML", reply_markup: options.reply_markup },
+      );
+      delete userStates[userId];
+    }
+    return;
   } else if (userState && userState.status === "waiting_admin_id_to_add") {
     // Admin ID qabul qilish
     const adminIdToAdd = msg.text.trim();
@@ -235,6 +384,23 @@ bot.on("message", async (msg) => {
   }
 
   if (msg.text === "/start") {
+    // Check subscription
+    const isSubbed = await isSubscribedToAllChannels(userId);
+
+    if (!isSubbed) {
+      const subButtons = await getSubscriptionButtons();
+      bot.sendMessage(
+        chatId,
+        `⚠️ Bot-ni ishlatish uchun barcha kanallarga obuna bo'lishingiz kerak:`,
+        {
+          reply_markup: { inline_keyboard: subButtons },
+          parse_mode: "HTML",
+        },
+      );
+      delete userStates[userId];
+      return;
+    }
+
     // Holatni tozalash
     delete userStates[userId];
 
@@ -256,9 +422,11 @@ bot.on("message", async (msg) => {
   } else if (msg.text === "/panel") {
     // Admin panel - ID tekshirish
     const adminRole = await getAdminRole(userId);
-    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isMainAdmin = String(userId) === String(ADMIN_USER_ID);
     const isHeadAdmin = adminRole === "katta_admin";
     const isSmallAdmin = adminRole === "kichkina_admin";
+
+    console.log(`Admin check: userId=${userId}, ADMIN_USER_ID=${ADMIN_USER_ID}, isMainAdmin=${isMainAdmin}`);
 
     if (!isMainAdmin && !isHeadAdmin && !isSmallAdmin) {
       bot.sendMessage(chatId, "❌ Notogri buydaomish yoki tilla topildi!");
@@ -297,7 +465,10 @@ bot.on("message", async (msg) => {
               { text: "📢 Reklama", callback_data: "broadcast_menu" },
               { text: "📊 Statistika", callback_data: "admin_stats" },
             ],
-            [{ text: "👤 Admin boshqaruvi", callback_data: "admin_manage" }],
+            [
+              { text: "👤 Admin boshqaruvi", callback_data: "admin_manage" },
+              { text: "🔐 Majburiy obuna", callback_data: "subscription_manage" },
+            ],
             [{ text: "❌ Yopish", callback_data: "close_panel" }],
           ],
         },
@@ -324,9 +495,9 @@ bot.on("message", async (msg) => {
     // Kino nomini kutayotgan vaqt
     const movieName = msg.text;
 
-    // Holatni yangilash - kod kutishga o'tish
+    // Holatni yangilash - janr kutishga o'tish
     userStates[userId] = {
-      status: "waiting_code",
+      status: "waiting_genre",
       fileId: userState.fileId,
       fileType: userState.fileType,
       movieName: movieName,
@@ -334,7 +505,85 @@ bot.on("message", async (msg) => {
 
     bot.sendMessage(
       chatId,
-      `✅ Kino nomi: <b>${movieName}</b>\n\n🔑 Endi kino uchun kod kiriting (masalan: ABC123):`,
+      `✅ Kino nomi: <b>${movieName}</b>\n\n🎭 Endi kino janrini kiriting (masalan: Fantastik, Drama, Komediya, Jangari):`,
+      { parse_mode: "HTML" },
+    );
+  } else if (userState && userState.status === "waiting_genre") {
+    // Kino janrini kutayotgan vaqt
+    const movieGenre = msg.text;
+
+    // Holatni yangilash - yil kutishga o'tish
+    userStates[userId] = {
+      status: "waiting_year",
+      fileId: userState.fileId,
+      fileType: userState.fileType,
+      movieName: userState.movieName,
+      movieGenre: movieGenre,
+    };
+
+    bot.sendMessage(
+      chatId,
+      `✅ Janr: <b>${movieGenre}</b>\n\n📅 Endi chiqqan yilini kiriting (masalan: 2024):`,
+      { parse_mode: "HTML" },
+    );
+  } else if (userState && userState.status === "waiting_year") {
+    // Kino yilini kutayotgan vaqt
+    const movieYear = msg.text;
+
+    // Holatni yangilash - til kutishga o'tish
+    userStates[userId] = {
+      status: "waiting_language",
+      fileId: userState.fileId,
+      fileType: userState.fileType,
+      movieName: userState.movieName,
+      movieGenre: userState.movieGenre,
+      movieYear: movieYear,
+    };
+
+    bot.sendMessage(
+      chatId,
+      `✅ Yil: <b>${movieYear}</b>\n\n🌍 Endi tilini kiriting (masalan: O'zbek, Rus, Ingliz, Turk):`,
+      { parse_mode: "HTML" },
+    );
+  } else if (userState && userState.status === "waiting_language") {
+    // Kino tilini kutayotgan vaqt
+    const movieLanguage = msg.text;
+
+    // Holatni yangilash - davomiyligi kutishga o'tish
+    userStates[userId] = {
+      status: "waiting_duration",
+      fileId: userState.fileId,
+      fileType: userState.fileType,
+      movieName: userState.movieName,
+      movieGenre: userState.movieGenre,
+      movieYear: userState.movieYear,
+      movieLanguage: movieLanguage,
+    };
+
+    bot.sendMessage(
+      chatId,
+      `✅ Til: <b>${movieLanguage}</b>\n\n⏱️ Endi davomiyligini kiriting (masalan: 2 soat 15 daqiqa yoki 135 daqiqa):`,
+      { parse_mode: "HTML" },
+    );
+  } else if (userState && userState.status === "waiting_duration") {
+    // Kino davomiyligini kutayotgan vaqt
+    const movieDuration = msg.text;
+
+    // Holatni yangilash - kod kutishga o'tish
+    userStates[userId] = {
+      status: "waiting_code",
+      fileId: userState.fileId,
+      fileType: userState.fileType,
+      movieName: userState.movieName,
+      movieGenre: userState.movieGenre,
+      movieYear: userState.movieYear,
+      movieLanguage: userState.movieLanguage,
+      movieDuration: movieDuration,
+    };
+
+    bot.sendMessage(
+      chatId,
+      `✅ Davomiyligi: <b>${movieDuration}</b>\n\n🔑 Endi kino uchun kod kiriting (masalan: ABC123):`,
       { parse_mode: "HTML" },
     );
   } else if (userState && userState.status === "waiting_code") {
@@ -344,11 +593,21 @@ bot.on("message", async (msg) => {
     const fileType = userState.fileType;
     const fileId = userState.fileId;
 
-    // Kod validatsiyasi
-    if (movieCode.length < 3) {
+    // Kod validatsiyasi (minimal uzunlik olib tashlandi)
+    if (movieCode.length < 1) {
       bot.sendMessage(
         chatId,
-        "❌ Kod juda qisqa! Iltimos uzunroq kod kiriting (minimal 3 ta harf).",
+        "❌ Kod bo'sh bo'lishi mumkin emas! Iltimos kod kiriting.",
+      );
+      return;
+    }
+
+    // Kodning takrorlanishini tekshirish
+    const existingMovie = await getMovieByCode(movieCode);
+    if (existingMovie) {
+      bot.sendMessage(
+        chatId,
+        `❌ Bu kod allaqachon ishlatilgan! Boshqa kod tanlang.\n\n🎬 Kino: ${existingMovie.name}\n🔑 Kod: ${existingMovie.code}`,
       );
       return;
     }
@@ -364,11 +623,31 @@ bot.on("message", async (msg) => {
       msg,
       chatId,
       userId,
+      userState.movieGenre,
+      userState.movieYear,
+      userState.movieLanguage,
+      userState.movieDuration,
     );
   } else if (msg.video || msg.document) {
     // Video yoki fayl yuborilgan
     const fileId = msg.video?.file_id || msg.document?.file_id;
     const fileType = msg.video ? "video" : "document";
+
+    // Foydalanuvchi holatini saqlash
+    userStates[userId] = {
+      status: "waiting_name",
+      fileId: fileId,
+      fileType: fileType,
+    };
+
+    bot.sendMessage(
+      chatId,
+      "📝 Kino uchun nom kiriting (masalan: Titanic, Avatar va h.k.):",
+    );
+  } else if (msg.photo) {
+    // Photo yuborilgan
+    const fileId = msg.photo[msg.photo.length - 1].file_id;
+    const fileType = "photo";
 
     // Foydalanuvchi holatini saqlash
     userStates[userId] = {
@@ -388,10 +667,11 @@ bot.on("message", async (msg) => {
 
     if (found) {
       const sendMethod =
-        found.file_type === "video" ? "sendVideo" : "sendDocument";
+        found.file_type === "video" ? "sendVideo" : 
+        found.file_type === "photo" ? "sendPhoto" : "sendDocument";
 
       const sendOptions = {
-        caption: `🎬 <b>${found.name}</b>\n🔑 Kod: <code>${found.code}</code>\n⏰ Sana: ${new Date(found.uploaded_at).toLocaleString("uz-UZ")}`,
+        caption: `🎬 <b>${found.name}</b>\n🔑 Kod: <code>${found.code}</code>\n🎭 Janr: ${found.genre || "Noma'lum"}\n📅 Yili: ${found.year || "Noma'lum"}\n🌍 Tili: ${found.language || "Noma'lum"}\n⏱️ Davomiyligi: ${found.duration || "Noma'lum"}\n⏰ Sana: ${new Date(found.uploaded_at).toLocaleString("uz-UZ")}`,
         parse_mode: "HTML",
       };
 
@@ -416,6 +696,34 @@ bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
   const userId = String(query.from.id);
   const userState = userStates[userId];
+
+  // Mandatory subscription check for button actions as well
+  const adminRoleForSubCheck = await getAdminRole(userId);
+  const isMainAdminForSubCheck = String(userId) === String(ADMIN_USER_ID);
+  const isAdminForSubCheck =
+    isMainAdminForSubCheck ||
+    adminRoleForSubCheck === "katta_admin" ||
+    adminRoleForSubCheck === "kichkina_admin";
+
+  if (!isAdminForSubCheck && query.data !== "check_subscription") {
+    const isSubbed = await isSubscribedToAllChannels(userId);
+    if (!isSubbed) {
+      const subButtons = await getSubscriptionButtons();
+      await bot.answerCallbackQuery(query.id, {
+        text: "❌ Avval kanallarga obuna bo'ling!",
+        show_alert: true,
+      });
+      await bot.sendMessage(
+        chatId,
+        "⚠️ Bot-ni ishlatish uchun barcha kanallarga obuna bo'lishingiz kerak:",
+        {
+          reply_markup: { inline_keyboard: subButtons },
+          parse_mode: "HTML",
+        },
+      );
+      return;
+    }
+  }
 
   if (query.data === "close_panel") {
     // Panel yopish
@@ -450,9 +758,11 @@ bot.on("callback_query", async (query) => {
   } else if (query.data === "admin_panel") {
     // Admin panelga qaytish
     const adminRole = await getAdminRole(userId);
-    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isMainAdmin = String(userId) === String(ADMIN_USER_ID);
     const isHeadAdmin = adminRole === "katta_admin";
     const isSmallAdmin = adminRole === "kichkina_admin";
+
+    console.log(`Admin check callback: userId=${userId}, ADMIN_USER_ID=${ADMIN_USER_ID}, isMainAdmin=${isMainAdmin}`);
 
     if (!isMainAdmin && !isHeadAdmin && !isSmallAdmin) {
       bot.answerCallbackQuery(query.id, {
@@ -496,7 +806,10 @@ bot.on("callback_query", async (query) => {
               { text: "📢 Reklama", callback_data: "broadcast_menu" },
               { text: "📊 Statistika", callback_data: "admin_stats" },
             ],
-            [{ text: "👤 Admin boshqaruvi", callback_data: "admin_manage" }],
+            [
+              { text: "👤 Admin boshqaruvi", callback_data: "admin_manage" },
+              { text: "🔐 Majburiy obuna", callback_data: "subscription_manage" },
+            ],
             [{ text: "❌ Yopish", callback_data: "close_panel" }],
           ],
         },
@@ -901,6 +1214,239 @@ bot.on("callback_query", async (query) => {
         ...options,
       },
     );
+  } else if (query.data === "check_subscription") {
+    // Obuna tekshirish
+    const isSubbed = await isSubscribedToAllChannels(userId);
+    if (isSubbed) {
+      bot.answerCallbackQuery(query.id, {
+        text: "✅ Siz barcha kanallarga obuna bo'lgansiz!",
+      });
+      // Yangi requestni start menu-ga jo'natsa qilish
+      const startMsg = `Salom 👋 Xush kelibsiz! Kinolar botiga xush kelibsiz!\n\n🆔 Sizning ID: <code>${userId}</code>`;
+      const options = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "📋 Kinolarni ko'r", callback_data: "list_movies" }],
+            [{ text: "🔍 Kino qidirish", callback_data: "search_movie" }],
+          ],
+        },
+      };
+      if (userId === ADMIN_USER_ID || (await getAdminRole(userId))) {
+        options.reply_markup.inline_keyboard.push([
+          { text: "🔐 Admin paneli", callback_data: "admin_panel" },
+        ]);
+      }
+      bot.editMessageText(startMsg, {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: "HTML",
+        ...options,
+      });
+    } else {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Siz hali barcha kanallarga obuna bo'lmagansiz!",
+        show_alert: true,
+      });
+    }
+  } else if (query.data === "subscription_manage") {
+    // Majburiy obuna boshqaruvi
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const channels = await getAllChannels();
+    const buttons = [];
+
+    // Kanal qo'shish tugmasi
+    buttons.push([{ text: "➕ Kanal qo'shish", callback_data: "add_channel" }]);
+
+    // Mavjud kanallar list
+    if (channels.length > 0) {
+      buttons.push([
+        { text: "🗑️ Kanal o'chirish", callback_data: "delete_channel_menu" },
+      ]);
+    }
+
+    buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_panel" }]);
+
+    let msg = "🔐 <b>Majburiy obuna boshqaruvi</b>\n\n";
+    msg += `Hozirda ${channels.length}ta kanal majburiy:\n\n`;
+
+    if (channels.length === 0) {
+      msg += "📭 Hozirda majburiy kanal yo'q\n\n";
+      msg += "💡 Kanal qo'shish uchun \"➕ Kanal qo'shish\" tugmasini bosing";
+    } else {
+      channels.forEach((ch, i) => {
+        const displayName = ch.channel_title || ch.channel_username || ch.channel_id;
+        msg += `${i + 1}. <b>${displayName}</b>\n   🔑 ID: <code>${ch.channel_id}</code>\n`;
+        if (ch.channel_username) {
+          msg += `   🔗 @${ch.channel_username}\n`;
+        }
+        msg += '\n';
+      });
+      msg += `\n💡 Foydalanuvchilar bu kanallarga obuna bo'lmaguncha bot-dan foydalana olmaydi`;
+    }
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: buttons,
+      },
+    };
+
+    bot.editMessageText(msg, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: "HTML",
+      ...options,
+    });
+  } else if (query.data === "channel_manage") {
+    // Kanal boshqaruvini ko'rsatish
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const channels = await getAllChannels();
+    const buttons = [];
+
+    // Kanal qo'shish tugmasi
+    buttons.push([{ text: "➕ Kanal qo'shish", callback_data: "add_channel" }]);
+
+    // Mavjud kanallar list
+    if (channels.length > 0) {
+      buttons.push([
+        { text: "🗑️ Kanal o'chirish", callback_data: "delete_channel_menu" },
+      ]);
+    }
+
+    buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_panel" }]);
+
+    let msg = "📡 <b>Kanal boshqaruvi</b>\n\n";
+    msg += `Hozirgi majburiy kanallar: ${channels.length}\n\n`;
+    channels.forEach((ch, i) => {
+      msg += `${i + 1}. <code>${ch.channel_id}</code>\n`;
+    });
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: buttons,
+      },
+    };
+
+    bot.editMessageText(msg, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: "HTML",
+      ...options,
+    });
+  } else if (query.data === "add_channel") {
+    // Kanal qo'shish uchun link so'rash
+    userStates[userId] = {
+      status: "waiting_channel_link",
+      sourceView: "subscription_manage",
+    };
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "subscription_manage" }],
+        ],
+      },
+    };
+
+    bot.editMessageText(
+      "📡 Kanal qo'shish:\n\nQo'shmoqchi bo'lgan kanalingizdan bitta post/xabarni botga FORWARD qiling.",
+      {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        ...options,
+      },
+    );
+  } else if (query.data === "delete_channel_menu") {
+    // O'chirish menu
+    const channels = await getAllChannels();
+    const buttons = [];
+
+    channels.forEach((ch) => {
+      buttons.push([
+        {
+          text: `❌ ${ch.channel_id}`,
+          callback_data: `del_ch_${ch.channel_id}`,
+        },
+      ]);
+    });
+
+    buttons.push([{ text: "🔙 Orqaga", callback_data: "subscription_manage" }]);
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: buttons,
+      },
+    };
+
+    bot.editMessageText("Kanal tanlang:", {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      ...options,
+    });
+  } else if (query.data.startsWith("del_ch_")) {
+    // Kanal o'chirish
+    const channelId = query.data.replace("del_ch_", "");
+    await deleteChannel(channelId);
+
+    bot.answerCallbackQuery(query.id, {
+      text: `✅ Kanal o'chirildi!`,
+    });
+
+    // Subscription management menu-ga qaytish
+    const channels = await getAllChannels();
+    const buttons = [];
+
+    buttons.push([{ text: "➕ Kanal qo'shish", callback_data: "add_channel" }]);
+
+    if (channels.length > 0) {
+      buttons.push([
+        { text: "🗑️ Kanal o'chirish", callback_data: "delete_channel_menu" },
+      ]);
+    }
+
+    buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_panel" }]);
+
+    let msg = "🔐 <b>Majburiy obuna boshqaruvi</b>\n\n";
+    msg += `Hozirda ${channels.length}ta kanal majburiy:\n\n`;
+    channels.forEach((ch, i) => {
+      msg += `${i + 1}. <code>${ch.channel_id}</code>\n`;
+    });
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: buttons,
+      },
+    };
+
+    bot.editMessageText(msg, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: "HTML",
+      ...options,
+    });
   }
 
   // Callback query ni tugatish

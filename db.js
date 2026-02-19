@@ -43,7 +43,11 @@ async function init() {
         poster_file_id TEXT,
         uploaded_by_id TEXT,
         uploaded_at TIMESTAMP DEFAULT NOW(),
-        channel_message_id BIGINT
+        channel_message_id BIGINT,
+        genre TEXT,
+        year TEXT,
+        language TEXT,
+        duration TEXT
       )
     `);
 
@@ -55,6 +59,47 @@ async function init() {
         added_at TIMESTAMP DEFAULT NOW()
       )
     `);
+
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS channels (
+        id SERIAL PRIMARY KEY,
+        channel_id TEXT UNIQUE NOT NULL,
+        channel_username TEXT,
+        channel_title TEXT,
+        added_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Migration: ensure 'channel_title' column exists (for older DBs)
+    try {
+      await pgPool.query(
+        `ALTER TABLE channels ADD COLUMN IF NOT EXISTS channel_title TEXT`,
+      );
+    } catch (err) {
+      // ignore
+    }
+
+    // Migration: ensure new movie metadata columns exist (for older DBs)
+    try {
+      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre TEXT`);
+    } catch (err) {
+      // ignore
+    }
+    try {
+      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS year TEXT`);
+    } catch (err) {
+      // ignore
+    }
+    try {
+      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS language TEXT`);
+    } catch (err) {
+      // ignore
+    }
+    try {
+      await pgPool.query(`ALTER TABLE movies ADD COLUMN IF NOT EXISTS duration TEXT`);
+    } catch (err) {
+      // ignore
+    }
   } else {
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -77,7 +122,11 @@ async function init() {
         poster_file_id TEXT,
         uploaded_by_id TEXT,
         uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        channel_message_id INTEGER
+        channel_message_id INTEGER,
+        genre TEXT,
+        year TEXT,
+        language TEXT,
+        duration TEXT
       )
     `);
 
@@ -90,6 +139,16 @@ async function init() {
       )
     `);
 
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS channels (
+        id INTEGER PRIMARY KEY,
+        channel_id TEXT UNIQUE NOT NULL,
+        channel_username TEXT,
+        channel_title TEXT,
+        added_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Migration: ensure 'role' column exists (for older DBs)
     try {
       const cols = sqliteDb.prepare("PRAGMA table_info(admins)").all();
@@ -98,6 +157,31 @@ async function init() {
         sqliteDb.exec(
           "ALTER TABLE admins ADD COLUMN role TEXT DEFAULT 'kichkina_admin'",
         );
+      }
+    } catch (err) {
+      // ignore
+    }
+
+    // Migration: ensure 'channel_title' column exists (for older DBs)
+    try {
+      const cols = sqliteDb.prepare("PRAGMA table_info(channels)").all();
+      const hasTitle = cols.some((c) => c.name === "channel_title");
+      if (!hasTitle) {
+        sqliteDb.exec("ALTER TABLE channels ADD COLUMN channel_title TEXT");
+      }
+    } catch (err) {
+      // ignore
+    }
+
+    // Migration: ensure new movie metadata columns exist (for older DBs)
+    try {
+      const cols = sqliteDb.prepare("PRAGMA table_info(movies)").all();
+      const movieColumns = ["genre", "year", "language", "duration"];
+      for (const col of movieColumns) {
+        const hasColumn = cols.some((c) => c.name === col);
+        if (!hasColumn) {
+          sqliteDb.exec(`ALTER TABLE movies ADD COLUMN ${col} TEXT`);
+        }
       }
     } catch (err) {
       // ignore
@@ -163,15 +247,31 @@ async function addMovie(
   fileType,
   posterFileId,
   uploadedById,
+  genre = null,
+  year = null,
+  language = null,
+  duration = null,
 ) {
   if (usePostgres) {
-    return pgPool.query(
-      `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (code) DO NOTHING`,
-      [code, name, fileId, fileType, posterFileId || null, uploadedById],
+    await pgPool.query(
+      `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (code) DO NOTHING`,
+      [
+        code,
+        name,
+        fileId,
+        fileType,
+        posterFileId || null,
+        uploadedById,
+        genre || null,
+        year || null,
+        language || null,
+        duration || null,
+      ],
     );
+    return { success: true };
   }
   const stmt = sqliteDb.prepare(
-    `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id) VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   return stmt.run(
     code,
@@ -180,6 +280,10 @@ async function addMovie(
     fileType,
     posterFileId || null,
     uploadedById,
+    genre || null,
+    year || null,
+    language || null,
+    duration || null,
   );
 }
 
@@ -272,6 +376,43 @@ async function getAllAdmins() {
   return stmt.all();
 }
 
+// Channels
+async function addChannel(channelId, channelUsername, channelTitle) {
+  if (usePostgres) {
+    return pgPool.query(
+      `INSERT INTO channels (channel_id, channel_username, channel_title) VALUES ($1, $2, $3) ON CONFLICT (channel_id) DO NOTHING`,
+      [channelId, channelUsername || null, channelTitle || null],
+    );
+  }
+  const stmt = sqliteDb.prepare(
+    "INSERT OR IGNORE INTO channels (channel_id, channel_username, channel_title) VALUES (?, ?, ?)",
+  );
+  return stmt.run(channelId, channelUsername || null, channelTitle || null);
+}
+
+async function getAllChannels() {
+  if (usePostgres) {
+    const res = await pgPool.query(
+      `SELECT * FROM channels ORDER BY added_at DESC`,
+    );
+    return res.rows;
+  }
+  const stmt = sqliteDb.prepare(
+    "SELECT * FROM channels ORDER BY added_at DESC",
+  );
+  return stmt.all();
+}
+
+async function deleteChannel(channelId) {
+  if (usePostgres) {
+    return pgPool.query(`DELETE FROM channels WHERE channel_id = $1`, [
+      channelId,
+    ]);
+  }
+  const stmt = sqliteDb.prepare("DELETE FROM channels WHERE channel_id = ?");
+  return stmt.run(channelId);
+}
+
 module.exports = {
   init,
   addUser,
@@ -287,6 +428,9 @@ module.exports = {
   addAdmin,
   removeAdmin,
   getAllAdmins,
+  addChannel,
+  getAllChannels,
+  deleteChannel,
   close: async () => {
     try {
       if (usePostgres && pgPool) await pgPool.end();
