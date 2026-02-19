@@ -1,0 +1,16 @@
+services:
+  - type: background_worker
+    name: kino-bot
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        scope: build
+      - key: MOVIES_CHANNEL_ID
+        scope: build
+      - key: ADMIN_USER_ID
+        scope: build
+      - key: DATABASE_URL
+        scope: build
