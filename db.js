@@ -287,4 +287,11 @@ module.exports = {
   addAdmin,
   removeAdmin,
   getAllAdmins,
+  close: async () => {
+    try {
+      if (usePostgres && pgPool) await pgPool.end();
+    } catch (err) {
+      // ignore
+    }
+  },
 };

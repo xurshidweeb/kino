@@ -1,6 +1,7 @@
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const {
+  init,
   addUser,
   getUserById,
   getAllUsers,
@@ -14,25 +15,60 @@ const {
   addAdmin,
   removeAdmin,
   getAllAdmins,
+  close,
 } = require("./db");
-
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const bot = new TelegramBot(token, { polling: true });
+let bot = new TelegramBot(token, { polling: false });
+
+// After all handlers are registered, initialize DB and start polling
+(async () => {
+  try {
+    await init();
+
+    // Debug: Token qabul qilindi
+    console.log("🤖 Bot ishga tushmoqda...");
+    console.log("✅ Token qabul qilindi:", token ? "✓" : "✗");
+    console.log("✅ Kanal ID:", MOVIES_CHANNEL_ID);
+    console.log("✅ Admin ID:", ADMIN_USER_ID);
+
+    if (bot && typeof bot.startPolling === "function") {
+      bot.startPolling();
+    } else if (bot && typeof bot._polling === "object") {
+      // fallback: enable polling by setting option (older versions may auto-start)
+      // nothing to do
+    }
+  } catch (err) {
+    console.error("DB init error:", err);
+    process.exit(1);
+  }
+})();
 const MOVIES_CHANNEL_ID = process.env.MOVIES_CHANNEL_ID;
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID; // Admin ID .env dan
 
 // Foydalanuvchilar holatini saqlash uchun
 const userStates = {};
 
-// Debug: Token va kanal ID verificatsiyasi
-console.log("🤖 Bot ishga tushmoqda...");
-console.log("✅ Token qabul qilindi:", token ? "✓" : "✗");
-console.log("✅ Kanal ID:", MOVIES_CHANNEL_ID);
-console.log("✅ Admin ID:", ADMIN_USER_ID);
+// note: startup logs printed after DB init
 
 // Bot ready
 bot.on("polling_error", (error) => {
   console.error("❌ Polling xatosi:", error);
+});
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+  console.log("Shutting down...");
+  try {
+    await close();
+  } catch (err) {}
+  process.exit(0);
+});
+process.on("SIGTERM", async () => {
+  console.log("Shutting down...");
+  try {
+    await close();
+  } catch (err) {}
+  process.exit(0);
 });
 
 // Kinoni oblashka bilan kanal saqlash funksiyasi
