@@ -1,4 +1,5 @@
 require("dotenv").config();
+const http = require("http");
 const TelegramBot = require("node-telegram-bot-api");
 const {
   init,
@@ -20,7 +21,26 @@ const {
   deleteChannel,
   close,
 } = require("./db");
+const PORT = process.env.PORT || 3000;
+const MOVIES_CHANNEL_ID = process.env.MOVIES_CHANNEL_ID;
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID; // Admin ID .env dan
 const token = process.env.TELEGRAM_BOT_TOKEN;
+
+http
+  .createServer((req, res) => {
+    if (req.url === "/healthz") {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/plain");
+      res.end("OK");
+      return;
+    }
+
+    res.statusCode = 404;
+    res.setHeader("Content-Type", "text/plain");
+    res.end("Not Found");
+  })
+  .listen(PORT);
+
 let bot = new TelegramBot(token, { polling: false });
 
 // After all handlers are registered, initialize DB and start polling
@@ -45,8 +65,6 @@ let bot = new TelegramBot(token, { polling: false });
     process.exit(1);
   }
 })();
-const MOVIES_CHANNEL_ID = process.env.MOVIES_CHANNEL_ID;
-const ADMIN_USER_ID = process.env.ADMIN_USER_ID; // Admin ID .env dan
 
 // Foydalanuvchilar holatini saqlash uchun
 const userStates = {};
