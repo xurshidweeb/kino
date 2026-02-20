@@ -29,22 +29,38 @@ const MOVIES_CHANNEL_ID = process.env.MOVIES_CHANNEL_ID;
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID; // Admin ID .env dan
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
-http
-  .createServer((req, res) => {
-    if (req.url === "/healthz") {
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "text/plain");
-      res.end("OK");
-      return;
-    }
+const mainMenuOptions = {
+  reply_markup: {
+    inline_keyboard: [[{ text: "🏠 Bosh menu", callback_data: "start_menu" }]],
+  },
+};
 
-    res.statusCode = 404;
+const healthServer = http.createServer((req, res) => {
+  if (req.url === "/healthz") {
+    res.statusCode = 200;
     res.setHeader("Content-Type", "text/plain");
-    res.end("Not Found");
-  })
-  .listen(PORT);
+    res.end("OK");
+    return;
+  }
 
-let bot = new TelegramBot(token, { polling: true });
+  res.statusCode = 404;
+  res.setHeader("Content-Type", "text/plain");
+  res.end("Not Found");
+});
+
+healthServer.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      `Health server port band: ${PORT}. Bot ishlashda davom etadi (localda).`,
+    );
+    return;
+  }
+  console.error("Health server error:", err);
+});
+
+healthServer.listen(PORT);
+
+let bot = new TelegramBot(token, { polling: false });
 
 // After all handlers are registered, initialize DB and start polling
 (async () => {
@@ -114,7 +130,7 @@ async function saveMovieWithPoster(
   const uploadedBy = msgOrQuery.from.username || msgOrQuery.from.first_name;
   let caption;
   if (description) {
-    caption = `📋 <b>${movieName}</b>\n\n${description}\n\n🔑 Kod: <code>${movieCode}</code>`;
+    caption = `${description}\n\n🔑 Kod: <code>${movieCode}</code>`;
   } else {
     caption = `📽️ <b>${movieName}</b>\n\n🎭 Janr: ${movieGenre || "Noma'lum"}\n📅 Yili: ${movieYear || "Noma'lum"}\n🌍 Tili: ${movieLanguage || "Noma'lum"}\n⏱️ Davomiyligi: ${movieDuration || "Noma'lum"}\n📤 Yuklagan: ${uploadedBy}\n\n🔑 Kod: <code>${movieCode}</code>`;
   }
@@ -147,6 +163,7 @@ async function saveMovieWithPoster(
     await addMovie(
       movieCode,
       movieName,
+      description,
       fileId,
       fileType,
       posterFileId || null,
@@ -156,7 +173,6 @@ async function saveMovieWithPoster(
       movieLanguage,
       movieDuration,
       sentMessage.message_id,
-      description,
     );
 
     let successMsg = `✨ Kino muvaffaqiyatli saqlandi!\n\n🎬 <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>`;
@@ -165,7 +181,10 @@ async function saveMovieWithPoster(
     }
     successMsg += `\n\nFoydalanuvchilar bu kodi yuborsalar, kino ularni keladi!`;
 
-    bot.sendMessage(chatId, successMsg, { parse_mode: "HTML" });
+    bot.sendMessage(chatId, successMsg, {
+      parse_mode: "HTML",
+      ...mainMenuOptions,
+    });
 
     // Holatni tozalash
     delete userStates[userId];
@@ -242,6 +261,22 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const userId = String(msg.from.id);
   const userState = userStates[userId];
+
+  // Cleanup: remove legacy multi-step states if they still exist
+  if (
+    userState &&
+    (userState.status === "waiting_genre" ||
+      userState.status === "waiting_year" ||
+      userState.status === "waiting_language" ||
+      userState.status === "waiting_duration")
+  ) {
+    delete userStates[userId];
+    await bot.sendMessage(
+      chatId,
+      "ℹ️ Bot yangilandi. Kino qo'shish uchun faylni qaytadan yuboring va izohni bitta xabarda yozing.",
+    );
+    return;
+  }
 
   // Foydalanuvchini DB ga qo'shish
   await addUser(userId, msg.from.first_name, msg.from.username || "");
@@ -359,7 +394,17 @@ bot.on("message", async (msg) => {
     bot.sendMessage(
       chatId,
       `✅ Broadcast tugallandi!\n\n✔️ Muvaffaq: ${successCount}\n❌ Xato: ${errorCount}`,
-      options,
+      {
+        ...options,
+        reply_markup: {
+          inline_keyboard: [
+            ...(options.reply_markup && options.reply_markup.inline_keyboard
+              ? options.reply_markup.inline_keyboard
+              : []),
+            [{ text: "🏠 Bosh menu", callback_data: "start_menu" }],
+          ],
+        },
+      },
     );
 
     delete userStates[userId];
@@ -518,6 +563,7 @@ bot.on("message", async (msg) => {
           reply_markup: {
             inline_keyboard: [
               [{ text: "🔙 Orqaga", callback_data: sourceView }],
+              [{ text: "🏠 Bosh menu", callback_data: "start_menu" }],
             ],
           },
         };
@@ -574,7 +620,7 @@ bot.on("message", async (msg) => {
     bot.sendMessage(
       chatId,
       `✅ Admin muvaffaqiyatli qo'shildi! (ID: <code>${adminIdToAdd}</code>)\n\nTuri: ${roleText}`,
-      { parse_mode: "HTML" },
+      { parse_mode: "HTML", ...mainMenuOptions },
     );
     return;
   } else if (userState && userState.status === "waiting_delete_code") {
@@ -627,7 +673,7 @@ bot.on("message", async (msg) => {
       bot.sendMessage(
         chatId,
         `✅ Kino o'chirildi: <b>${movie.name}</b>\n🔑 Kod: <code>${movie.code}</code>`,
-        { parse_mode: "HTML" },
+        { parse_mode: "HTML", ...mainMenuOptions },
       );
     } else {
       bot.sendMessage(chatId, "❌ Kino o'chirilmadi — ichki xato yuz berdi.");
@@ -830,69 +876,6 @@ bot.on("message", async (msg) => {
       bot.sendMessage(chatId, "❌ Preview ko'rsatishda xato yuz berdi!");
       delete userStates[userId];
     }
-  } else if (userState && userState.status === "waiting_genre") {
-    // Kino janrini kutayotgan vaqt
-    const movieGenre = msg.text;
-
-    // Holatni yangilash - yil kutishga o'tish
-    userStates[userId] = {
-      status: "waiting_year",
-      fileId: userState.fileId,
-      fileType: userState.fileType,
-      movieName: userState.movieName,
-      movieGenre: movieGenre,
-    };
-
-    bot.sendMessage(
-      chatId,
-      `✅ Janr: <b>${movieGenre}</b>\n\n📅 Endi chiqqan yilini kiriting (masalan: 2024):`,
-      { parse_mode: "HTML" },
-    );
-  } else if (userState && userState.status === "waiting_year") {
-    // Kino yilini kutayotgan vaqt
-    const movieYear = msg.text;
-
-    // Holatni yangilash - til kutishga o'tish
-    userStates[userId] = {
-      status: "waiting_language",
-      fileId: userState.fileId,
-      fileType: userState.fileType,
-      movieName: userState.movieName,
-      movieGenre: userState.movieGenre,
-      movieYear: movieYear,
-    };
-
-    bot.sendMessage(
-      chatId,
-      `✅ Yil: <b>${movieYear}</b>\n\n🌍 Endi tilini kiriting (masalan: O'zbek, Rus, Ingliz, Turk):`,
-      { parse_mode: "HTML" },
-    );
-  } else if (userState && userState.status === "waiting_language") {
-    // Kino tilini kutayotgan vaqt
-    const movieLanguage = msg.text;
-
-    // Holatni yangilash - davomiyligi kutishga o'tish
-    userStates[userId] = {
-      status: "waiting_duration",
-      fileId: userState.fileId,
-      fileType: userState.fileType,
-      movieName: userState.movieName,
-      movieGenre: userState.movieGenre,
-      movieYear: userState.movieYear,
-      movieLanguage: movieLanguage,
-    };
-
-    bot.sendMessage(
-      chatId,
-      `✅ Til: <b>${movieLanguage}</b>\n\n⏱️ Endi davomiyligini kiriting (masalan: 2 soat 15 daqiqa yoki 135 daqiqa):`,
-      { parse_mode: "HTML" },
-    );
-  } else if (userState && userState.status === "waiting_duration") {
-    // Kino davomiyligini kutayotgan vaqt
-    const movieDuration = msg.text;
-
-    // NEW: after duration we won't ask for code in this simplified flow
-    // (older multi-step flow removed in favor of single-description preview)
   } else if (msg.video || msg.document) {
     // Video yoki fayl yuborilgan
     const fileId = msg.video?.file_id || msg.document?.file_id;
@@ -957,9 +940,19 @@ bot.on("message", async (msg) => {
             ? "sendPhoto"
             : "sendDocument";
 
-      // Use description if provided, otherwise use old template format
-      const caption = found.description
-        ? `📋 <b>${found.name}</b>\n\n${found.description}\n\n🔑 Kod: <code>${found.code}</code>`
+      // Increment view counter first so we can show updated views in caption
+      let viewsToShow = (found.views || 0) + 1;
+      try {
+        await incrementMovieViews(found.code);
+      } catch (e) {
+        console.error("View increment error:", e && e.message ? e.message : e);
+        viewsToShow = found.views || 0;
+      }
+
+      // Use description if provided; fallback to old "genre" value for previously saved items
+      const effectiveDescription = found.description || found.genre;
+      const caption = effectiveDescription
+        ? `${effectiveDescription}\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`
         : `🎬 <b>${found.name}</b>\n\n🎭 Janr: ${found.genre || "Noma'lum"}\n📅 Yili: ${found.year || "Noma'lum"}\n🌍 Tili: ${found.language || "Noma'lum"}\n⏱️ Davomiyligi: ${found.duration || "Noma'lum"}\n\n🔑 Kod: <code>${found.code}</code>`;
 
       const sendOptions = {
@@ -967,19 +960,26 @@ bot.on("message", async (msg) => {
         parse_mode: "HTML",
       };
 
-      // Increment view counter
-      try {
-        await incrementMovieViews(found.code);
-      } catch (e) {
-        console.error("View increment error:", e && e.message ? e.message : e);
-      }
-
       // Agar obloshka bo'lsa qo'shish
       if (found.poster_file_id) {
         sendOptions.thumb = found.poster_file_id;
       }
 
-      await bot[sendMethod](chatId, found.file_id, sendOptions);
+      try {
+        if (!found.file_id) {
+          throw new Error("Missing file_id");
+        }
+        await bot[sendMethod](chatId, found.file_id, sendOptions);
+      } catch (err) {
+        console.error(
+          "Send movie error:",
+          err && err.message ? err.message : err,
+        );
+        await bot.sendMessage(
+          chatId,
+          "❌ Kino yuborishda xato yuz berdi. Iltimos keyinroq urinib ko'ring.",
+        );
+      }
 
       // clear viewing_top state to avoid numeric inputs being interpreted
       if (userState && userState.status === "viewing_top") {
@@ -1028,7 +1028,30 @@ bot.on("callback_query", async (query) => {
 
   if (query.data === "close_panel") {
     // Panel yopish
-    bot.deleteMessage(chatId, query.message.message_id);
+    try {
+      await bot.deleteMessage(chatId, query.message.message_id);
+    } catch (err) {
+      // ignore
+    }
+
+    delete userStates[userId];
+    let startMsg = `Salom 👋 Xush kelibsiz! Kinolar botiga xush kelibsiz!\n\n🆔 Sizning ID: <code>${userId}</code>\n\nKino kodini yuboring yoki Top kinolarni tomosha qiling.`;
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [[{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }]],
+      },
+    };
+    if (userId === ADMIN_USER_ID || (await getAdminRole(userId))) {
+      options.reply_markup.inline_keyboard.push([
+        { text: "🔐 Admin paneli", callback_data: "admin_panel" },
+      ]);
+    }
+
+    await bot.sendMessage(chatId, startMsg, {
+      parse_mode: "HTML",
+      ...options,
+    });
   } else if (query.data === "start_menu") {
     // Bosh menyu - /start komandasi
     delete userStates[userId];
@@ -1566,7 +1589,17 @@ bot.on("callback_query", async (query) => {
     bot.sendMessage(
       chatId,
       `✅ Broadcast tugallandi!\n\n✔️ Muvaffaq: ${successCount}\n❌ Xato: ${errorCount}`,
-      options,
+      {
+        ...options,
+        reply_markup: {
+          inline_keyboard: [
+            ...(options.reply_markup && options.reply_markup.inline_keyboard
+              ? options.reply_markup.inline_keyboard
+              : []),
+            [{ text: "🏠 Bosh menu", callback_data: "start_menu" }],
+          ],
+        },
+      },
     );
 
     delete userStates[userId];
@@ -1617,6 +1650,7 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Admin panel", callback_data: "admin_panel" }],
+          [{ text: "🏠 Bosh menu", callback_data: "start_menu" }],
         ],
       },
     };
@@ -1800,7 +1834,9 @@ bot.on("callback_query", async (query) => {
       bot.answerCallbackQuery(query.id, {
         text: `✅ Admin (ID: ${adminId}) o'chirildi!`,
       });
-      bot.sendMessage(chatId, `✅ Admin (ID: ${adminId}) o'chirildi!`);
+      bot.sendMessage(chatId, `✅ Admin (ID: ${adminId}) o'chirildi!`, {
+        ...mainMenuOptions,
+      });
     } else {
       bot.answerCallbackQuery(query.id, {
         text: "❌ Admin topilmadi!",
@@ -1917,6 +1953,7 @@ bot.on("callback_query", async (query) => {
     }
 
     buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_panel" }]);
+    buttons.push([{ text: "🏠 Bosh menu", callback_data: "start_menu" }]);
 
     let msg = "🔐 <b>Majburiy obuna boshqaruvi</b>\n\n";
     msg += `Hozirda ${channels.length}ta kanal majburiy:\n\n`;

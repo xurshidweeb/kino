@@ -38,6 +38,7 @@ async function init() {
         id SERIAL PRIMARY KEY,
         code TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
+        description TEXT,
         file_id TEXT NOT NULL,
         file_type TEXT,
         poster_file_id TEXT,
@@ -48,7 +49,6 @@ async function init() {
         year TEXT,
         language TEXT,
         duration TEXT,
-        description TEXT,
         views BIGINT DEFAULT 0
       )
     `);
@@ -84,6 +84,13 @@ async function init() {
     // Migration: ensure new movie metadata columns exist (for older DBs)
     try {
       await pgPool.query(
+        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS description TEXT`,
+      );
+    } catch (err) {
+      // ignore
+    }
+    try {
+      await pgPool.query(
         `ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre TEXT`,
       );
     } catch (err) {
@@ -112,13 +119,6 @@ async function init() {
     }
     try {
       await pgPool.query(
-        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS description TEXT`,
-      );
-    } catch (err) {
-      // ignore
-    }
-    try {
-      await pgPool.query(
         `ALTER TABLE movies ADD COLUMN IF NOT EXISTS views BIGINT DEFAULT 0`,
       );
     } catch (err) {
@@ -141,6 +141,7 @@ async function init() {
         id INTEGER PRIMARY KEY,
         code TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
+        description TEXT,
         file_id TEXT NOT NULL,
         file_type TEXT,
         poster_file_id TEXT,
@@ -151,7 +152,6 @@ async function init() {
         year TEXT,
         language TEXT,
         duration TEXT,
-        description TEXT,
         views INTEGER DEFAULT 0
       )
     `);
@@ -203,11 +203,11 @@ async function init() {
     try {
       const cols = sqliteDb.prepare("PRAGMA table_info(movies)").all();
       const movieColumns = [
+        "description",
         "genre",
         "year",
         "language",
         "duration",
-        "description",
       ];
       for (const col of movieColumns) {
         const hasColumn = cols.some((c) => c.name === col);
@@ -279,6 +279,7 @@ async function updateLastActivity(userId) {
 async function addMovie(
   code,
   name,
+  description,
   fileId,
   fileType,
   posterFileId,
@@ -288,14 +289,14 @@ async function addMovie(
   language = null,
   duration = null,
   channelMessageId = null,
-  description = null,
 ) {
   if (usePostgres) {
     await pgPool.query(
-      `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (code) DO NOTHING`,
+      `INSERT INTO movies (code, name, description, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (code) DO NOTHING`,
       [
         code,
         name,
+        description || null,
         fileId,
         fileType,
         posterFileId || null,
@@ -305,17 +306,17 @@ async function addMovie(
         language || null,
         duration || null,
         channelMessageId || null,
-        description || null,
       ],
     );
     return { success: true };
   }
   const stmt = sqliteDb.prepare(
-    `INSERT OR IGNORE INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO movies (code, name, description, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   return stmt.run(
     code,
     name,
+    description || null,
     fileId,
     fileType,
     posterFileId || null,
@@ -325,7 +326,6 @@ async function addMovie(
     language || null,
     duration || null,
     channelMessageId || null,
-    description || null,
   );
 }
 
