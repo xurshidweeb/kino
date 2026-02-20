@@ -47,7 +47,9 @@ async function init() {
         genre TEXT,
         year TEXT,
         language TEXT,
-        duration TEXT
+        duration TEXT,
+        description TEXT,
+        views BIGINT DEFAULT 0
       )
     `);
 
@@ -108,6 +110,20 @@ async function init() {
     } catch (err) {
       // ignore
     }
+    try {
+      await pgPool.query(
+        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS description TEXT`,
+      );
+    } catch (err) {
+      // ignore
+    }
+    try {
+      await pgPool.query(
+        `ALTER TABLE movies ADD COLUMN IF NOT EXISTS views BIGINT DEFAULT 0`,
+      );
+    } catch (err) {
+      // ignore
+    }
   } else {
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -134,7 +150,9 @@ async function init() {
         genre TEXT,
         year TEXT,
         language TEXT,
-        duration TEXT
+        duration TEXT,
+        description TEXT,
+        views INTEGER DEFAULT 0
       )
     `);
 
@@ -184,12 +202,22 @@ async function init() {
     // Migration: ensure new movie metadata columns exist (for older DBs)
     try {
       const cols = sqliteDb.prepare("PRAGMA table_info(movies)").all();
-      const movieColumns = ["genre", "year", "language", "duration"];
+      const movieColumns = [
+        "genre",
+        "year",
+        "language",
+        "duration",
+        "description",
+      ];
       for (const col of movieColumns) {
         const hasColumn = cols.some((c) => c.name === col);
         if (!hasColumn) {
           sqliteDb.exec(`ALTER TABLE movies ADD COLUMN ${col} TEXT`);
         }
+      }
+      const hasViews = cols.some((c) => c.name === "views");
+      if (!hasViews) {
+        sqliteDb.exec(`ALTER TABLE movies ADD COLUMN views INTEGER DEFAULT 0`);
       }
     } catch (err) {
       // ignore
@@ -260,10 +288,11 @@ async function addMovie(
   language = null,
   duration = null,
   channelMessageId = null,
+  description = null,
 ) {
   if (usePostgres) {
     await pgPool.query(
-      `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (code) DO NOTHING`,
+      `INSERT INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (code) DO NOTHING`,
       [
         code,
         name,
@@ -276,12 +305,13 @@ async function addMovie(
         language || null,
         duration || null,
         channelMessageId || null,
+        description || null,
       ],
     );
     return { success: true };
   }
   const stmt = sqliteDb.prepare(
-    `INSERT OR IGNORE INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO movies (code, name, file_id, file_type, poster_file_id, uploaded_by_id, genre, year, language, duration, channel_message_id, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   return stmt.run(
     code,
@@ -295,6 +325,7 @@ async function addMovie(
     language || null,
     duration || null,
     channelMessageId || null,
+    description || null,
   );
 }
 
@@ -321,6 +352,47 @@ async function getAllMovies() {
     "SELECT * FROM movies ORDER BY uploaded_at DESC",
   );
   return stmt.all();
+}
+
+// Return total movies count
+async function getMoviesCount() {
+  if (usePostgres) {
+    const res = await pgPool.query(`SELECT COUNT(*)::int AS cnt FROM movies`);
+    return res.rows[0].cnt;
+  }
+  const stmt = sqliteDb.prepare("SELECT COUNT(*) AS cnt FROM movies");
+  const r = stmt.get();
+  return r ? r.cnt : 0;
+}
+
+// Get top movies ordered by views desc, then recent
+async function getTopMovies(limit = 10, offset = 0) {
+  if (usePostgres) {
+    const res = await pgPool.query(
+      `SELECT * FROM movies ORDER BY views DESC, uploaded_at DESC LIMIT $1 OFFSET $2`,
+      [limit, offset],
+    );
+    return res.rows;
+  }
+  const stmt = sqliteDb.prepare(
+    `SELECT * FROM movies ORDER BY views DESC, uploaded_at DESC LIMIT ? OFFSET ?`,
+  );
+  return stmt.all(limit, offset);
+}
+
+// Increment views counter for a movie code
+async function incrementMovieViews(code) {
+  const uc = code.toUpperCase();
+  if (usePostgres) {
+    return pgPool.query(
+      `UPDATE movies SET views = COALESCE(views,0) + 1 WHERE code = $1`,
+      [uc],
+    );
+  }
+  const stmt = sqliteDb.prepare(
+    `UPDATE movies SET views = COALESCE(views,0) + 1 WHERE code = ?`,
+  );
+  return stmt.run(uc);
 }
 
 async function deleteMovieByCode(code) {
@@ -433,7 +505,10 @@ module.exports = {
   addMovie,
   getMovieByCode,
   getAllMovies,
+  getMoviesCount,
+  getTopMovies,
   deleteMovieByCode,
+  incrementMovieViews,
   isAdmin,
   getAdminRole,
   addAdmin,

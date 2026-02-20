@@ -10,6 +10,9 @@ const {
   addMovie,
   getMovieByCode,
   getAllMovies,
+  getMoviesCount,
+  getTopMovies,
+  incrementMovieViews,
   deleteMovieByCode,
   isAdmin,
   getAdminRole,
@@ -102,13 +105,19 @@ async function saveMovieWithPoster(
   msgOrQuery,
   chatId,
   userId,
+  description = null,
   movieGenre = null,
   movieYear = null,
   movieLanguage = null,
   movieDuration = null,
 ) {
   const uploadedBy = msgOrQuery.from.username || msgOrQuery.from.first_name;
-  const caption = `📽️ <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>\n🎭 Janr: ${movieGenre || "Noma'lum"}\n📅 Yili: ${movieYear || "Noma'lum"}\n🌍 Tili: ${movieLanguage || "Noma'lum"}\n⏱️ Davomiyligi: ${movieDuration || "Noma'lum"}\n📤 Yuklagan: ${uploadedBy}\n⏰ Vaqti: ${new Date().toLocaleString("uz-UZ")}`;
+  let caption;
+  if (description) {
+    caption = `📋 <b>${movieName}</b>\n\n${description}\n\n🔑 Kod: <code>${movieCode}</code>`;
+  } else {
+    caption = `📽️ <b>${movieName}</b>\n\n🎭 Janr: ${movieGenre || "Noma'lum"}\n📅 Yili: ${movieYear || "Noma'lum"}\n🌍 Tili: ${movieLanguage || "Noma'lum"}\n⏱️ Davomiyligi: ${movieDuration || "Noma'lum"}\n📤 Yuklagan: ${uploadedBy}\n\n🔑 Kod: <code>${movieCode}</code>`;
+  }
 
   const sendMethod =
     fileType === "video"
@@ -147,6 +156,7 @@ async function saveMovieWithPoster(
       movieLanguage,
       movieDuration,
       sentMessage.message_id,
+      description,
     );
 
     let successMsg = `✨ Kino muvaffaqiyatli saqlandi!\n\n🎬 <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>`;
@@ -287,17 +297,15 @@ bot.on("message", async (msg) => {
     }
   }
 
-  // Broadcast handler
-  if (userState && userState.status === "waiting_broadcast") {
-    if (userId !== ADMIN_USER_ID) {
+  // Broadcast forward handler (forward prepared post)
+  if (userState && userState.status === "waiting_broadcast_forward") {
+    if (userId !== ADMIN_USER_ID && !(await getAdminRole(userId))) {
       bot.sendMessage(chatId, "❌ Notogri buydaomish!");
       delete userStates[userId];
       return;
     }
 
-    const broadcastMsg = msg.text;
     const allUsers = await getAllUsers();
-
     bot.sendMessage(
       chatId,
       `📢 Reklama ${allUsers.length} ta foydalanuvchiga jo'natilmoqda...`,
@@ -306,16 +314,33 @@ bot.on("message", async (msg) => {
     let successCount = 0;
     let errorCount = 0;
 
-    // Barcha userlarga yuborish
+    // Forward qilingan kontentni yuborish
     for (const user of allUsers) {
       try {
-        await bot.sendMessage(
-          user.user_id,
-          `📢 <b>Yangilik</b>\n\n${broadcastMsg}`,
-          {
+        if (msg.photo) {
+          await bot.sendPhoto(
+            user.user_id,
+            msg.photo[msg.photo.length - 1].file_id,
+            {
+              caption: msg.caption || "",
+              parse_mode: "HTML",
+            },
+          );
+        } else if (msg.video) {
+          await bot.sendVideo(user.user_id, msg.video.file_id, {
+            caption: msg.caption || "",
             parse_mode: "HTML",
-          },
-        );
+          });
+        } else if (msg.document) {
+          await bot.sendDocument(user.user_id, msg.document.file_id, {
+            caption: msg.caption || "",
+            parse_mode: "HTML",
+          });
+        } else if (msg.text) {
+          await bot.sendMessage(user.user_id, msg.text, {
+            parse_mode: "HTML",
+          });
+        }
         successCount++;
       } catch (err) {
         errorCount++;
@@ -323,12 +348,153 @@ bot.on("message", async (msg) => {
       }
     }
 
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "broadcast_menu" }],
+        ],
+      },
+    };
+
     bot.sendMessage(
       chatId,
       `✅ Broadcast tugallandi!\n\n✔️ Muvaffaq: ${successCount}\n❌ Xato: ${errorCount}`,
+      options,
     );
 
     delete userStates[userId];
+    return;
+  } else if (
+    userState &&
+    userState.status === "waiting_broadcast_create_media"
+  ) {
+    // Reklama tayyorlash - media qabul qilish
+    if (userId !== ADMIN_USER_ID && !(await getAdminRole(userId))) {
+      bot.sendMessage(chatId, "❌ Notogri buydaomish!");
+      delete userStates[userId];
+      return;
+    }
+
+    let fileId = null;
+    let fileType = null;
+
+    if (msg.photo) {
+      fileId = msg.photo[msg.photo.length - 1].file_id;
+      fileType = "photo";
+    } else if (msg.video) {
+      fileId = msg.video.file_id;
+      fileType = "video";
+    } else if (msg.document) {
+      fileId = msg.document.file_id;
+      fileType = "document";
+    } else if (
+      msg.text &&
+      (msg.text === "❌ Kerak emas" || msg.text === "⏩ O'tkazib yuborish")
+    ) {
+      // No file needed
+      fileId = null;
+      fileType = null;
+    } else {
+      bot.sendMessage(
+        chatId,
+        "❌ Iltimos rasm, video yoki file yuboring, yoki 'Kerak emas' tugmasini bosing.",
+      );
+      return;
+    }
+
+    userStates[userId] = {
+      status: "waiting_broadcast_create_text",
+      broadcastFileId: fileId,
+      broadcastFileType: fileType,
+    };
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "broadcast_menu" }],
+        ],
+      },
+    };
+
+    bot.sendMessage(
+      chatId,
+      `${fileId ? "✅ File qabul qilindi!\n\n" : ""}📝 Endi reklama matnini yuboring (yoki bo'sh qoldiring):`,
+      options,
+    );
+    return;
+  } else if (
+    userState &&
+    userState.status === "waiting_broadcast_create_text"
+  ) {
+    // Reklama tayyorlash - text qabul qilish va preview ko'rsatish
+    if (userId !== ADMIN_USER_ID && !(await getAdminRole(userId))) {
+      bot.sendMessage(chatId, "❌ Notogri buydaomish!");
+      delete userStates[userId];
+      return;
+    }
+
+    const broadcastText = msg.text || "";
+    const broadcastFileId = userState.broadcastFileId;
+    const broadcastFileType = userState.broadcastFileType;
+
+    // Preview postning ko'rinishini tayyorlash
+    userStates[userId] = {
+      status: "broadcast_preview",
+      broadcastFileId: broadcastFileId,
+      broadcastFileType: broadcastFileType,
+      broadcastText: broadcastText,
+    };
+
+    const previewOptions = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "✅ Tasdiqlash", callback_data: "broadcast_confirm" }],
+          [{ text: "❌ Bekor qilish", callback_data: "broadcast_cancel" }],
+        ],
+      },
+    };
+
+    // Preview ko'rsatish
+    try {
+      if (broadcastFileType === "photo" && broadcastFileId) {
+        await bot.sendPhoto(chatId, broadcastFileId, {
+          caption: `📋 <b>Reklama ko'rinishi:</b>\n\n${broadcastText}`,
+          parse_mode: "HTML",
+          ...previewOptions,
+        });
+      } else if (broadcastFileType === "video" && broadcastFileId) {
+        await bot.sendVideo(chatId, broadcastFileId, {
+          caption: `📋 <b>Reklama ko'rinishi:</b>\n\n${broadcastText}`,
+          parse_mode: "HTML",
+          ...previewOptions,
+        });
+      } else if (broadcastFileType === "document" && broadcastFileId) {
+        await bot.sendDocument(chatId, broadcastFileId, {
+          caption: `📋 <b>Reklama ko'rinishi:</b>\n\n${broadcastText}`,
+          parse_mode: "HTML",
+          ...previewOptions,
+        });
+      } else if (broadcastText) {
+        bot.sendMessage(
+          chatId,
+          `📋 <b>Reklama ko'rinishi:</b>\n\n${broadcastText}`,
+          {
+            parse_mode: "HTML",
+            ...previewOptions,
+          },
+        );
+      } else {
+        bot.sendMessage(
+          chatId,
+          "❌ Reklama bo'sh! Iltimos text yoki file bilan urinib ko'ring.",
+          previewOptions,
+        );
+      }
+    } catch (err) {
+      console.error("Preview xatosi:", err.message);
+      bot.sendMessage(chatId, "❌ Preview ko'rsatishda xato yuz berdi!");
+      delete userStates[userId];
+    }
     return;
   } else if (userState && userState.status === "waiting_channel_link") {
     // Kanal linkini qabul qilish
@@ -492,13 +658,12 @@ bot.on("message", async (msg) => {
     // Holatni tozalash
     delete userStates[userId];
 
-    let startMsg = `Salom 👋 Xush kelibsiz! Kinolar botiga xush kelibsiz!\n\n🆔 Sizning ID: <code>${userId}</code>`;
+    let startMsg = `Salom 👋 Xush kelibsiz!\n\nKino kodini yuboring yoki Top kinolarni tomosha qiling.`;
 
     const options = {
       reply_markup: {
         inline_keyboard: [
-          [{ text: "📋 Kinolarni ko'r", callback_data: "list_movies" }],
-          [{ text: "🔍 Kino qidirish", callback_data: "search_movie" }],
+          [{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }],
         ],
       },
     };
@@ -575,7 +740,7 @@ bot.on("message", async (msg) => {
     }
   } else if (
     userState &&
-    userState.status === "waiting_name" &&
+    userState.status === "waiting_description" &&
     !(userId === ADMIN_USER_ID || (await getAdminRole(userId)))
   ) {
     // Kino qo'shish - FAQAT ADMIN
@@ -584,23 +749,87 @@ bot.on("message", async (msg) => {
       "❌ Siz kino qo'sha olmaysiz! Faqat admin qo'sha oladi.",
     );
     delete userStates[userId];
-  } else if (userState && userState.status === "waiting_name") {
-    // Kino nomini kutayotgan vaqt
-    const movieName = msg.text;
+  } else if (userState && userState.status === "waiting_description") {
+    // Admin yuborgan description qabul qilindi -> so'raladi: kode kiriting
+    const description = msg.text || "";
 
-    // Holatni yangilash - janr kutishga o'tish
+    // Save description and ask for code from admin
     userStates[userId] = {
-      status: "waiting_genre",
+      status: "waiting_code",
       fileId: userState.fileId,
       fileType: userState.fileType,
-      movieName: movieName,
+      description: description,
     };
 
     bot.sendMessage(
       chatId,
-      `✅ Kino nomi: <b>${movieName}</b>\n\n🎭 Endi kino janrini kiriting (masalan: Fantastik, Drama, Komediya, Jangari):`,
-      { parse_mode: "HTML" },
+      "🔐 Iltimos kino uchun unikal kod kiriting (masalan: KINO1234):",
     );
+  } else if (userState && userState.status === "waiting_code") {
+    // Admin provided a code for the movie -> validate uniqueness then show preview
+    const providedCode = (msg.text || "").trim().toUpperCase();
+    if (!providedCode) {
+      bot.sendMessage(
+        chatId,
+        "❌ Kod bo'sh bo'lishi mumkin emas. Iltimos kod kiriting:",
+      );
+      return;
+    }
+
+    // check if code already exists
+    const existing = await getMovieByCode(providedCode);
+    if (existing) {
+      bot.sendMessage(
+        chatId,
+        "❌ Bu kod allaqachon ishlatilgan. Iltimos boshqa kod kiriting:",
+      );
+      return;
+    }
+
+    // Move to preview state with provided code
+    userStates[userId] = {
+      status: "upload_preview",
+      fileId: userState.fileId,
+      fileType: userState.fileType,
+      description: userState.description,
+      code: providedCode,
+    };
+
+    const previewOptions = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "✅ Tasdiqlash", callback_data: "confirm_upload" }],
+          [{ text: "❌ Bekor qilish", callback_data: "cancel_upload" }],
+        ],
+      },
+    };
+
+    try {
+      const captionText = `📋 <b>Kino preview:</b>\n\n${userState.description}\n\n🔑 <b>Kod:</b> ${providedCode}`;
+      if (userState.fileType === "photo") {
+        await bot.sendPhoto(chatId, userState.fileId, {
+          caption: captionText,
+          parse_mode: "HTML",
+          ...previewOptions,
+        });
+      } else if (userState.fileType === "video") {
+        await bot.sendVideo(chatId, userState.fileId, {
+          caption: captionText,
+          parse_mode: "HTML",
+          ...previewOptions,
+        });
+      } else {
+        await bot.sendDocument(chatId, userState.fileId, {
+          caption: captionText,
+          parse_mode: "HTML",
+          ...previewOptions,
+        });
+      }
+    } catch (err) {
+      console.error("Preview upload error:", err.message);
+      bot.sendMessage(chatId, "❌ Preview ko'rsatishda xato yuz berdi!");
+      delete userStates[userId];
+    }
   } else if (userState && userState.status === "waiting_genre") {
     // Kino janrini kutayotgan vaqt
     const movieGenre = msg.text;
@@ -662,101 +891,63 @@ bot.on("message", async (msg) => {
     // Kino davomiyligini kutayotgan vaqt
     const movieDuration = msg.text;
 
-    // Holatni yangilash - kod kutishga o'tish
-    userStates[userId] = {
-      status: "waiting_code",
-      fileId: userState.fileId,
-      fileType: userState.fileType,
-      movieName: userState.movieName,
-      movieGenre: userState.movieGenre,
-      movieYear: userState.movieYear,
-      movieLanguage: userState.movieLanguage,
-      movieDuration: movieDuration,
-    };
-
-    bot.sendMessage(
-      chatId,
-      `✅ Davomiyligi: <b>${movieDuration}</b>\n\n🔑 Endi kino uchun kod kiriting (masalan: ABC123):`,
-      { parse_mode: "HTML" },
-    );
-  } else if (userState && userState.status === "waiting_code") {
-    // Kino kodini kutayotgan vaqt
-    const movieCode = msg.text.toUpperCase().trim();
-    const movieName = userState.movieName;
-    const fileType = userState.fileType;
-    const fileId = userState.fileId;
-
-    // Kod validatsiyasi (minimal uzunlik olib tashlandi)
-    if (movieCode.length < 1) {
-      bot.sendMessage(
-        chatId,
-        "❌ Kod bo'sh bo'lishi mumkin emas! Iltimos kod kiriting.",
-      );
-      return;
-    }
-
-    // Kodning takrorlanishini tekshirish
-    const existingMovie = await getMovieByCode(movieCode);
-    if (existingMovie) {
-      bot.sendMessage(
-        chatId,
-        `❌ Bu kod allaqachon ishlatilgan! Boshqa kod tanlang.\n\n🎬 Kino: ${existingMovie.name}\n🔑 Kod: ${existingMovie.code}`,
-      );
-      return;
-    }
-
-    // Kinoni darhol saqlash (poster shart emas)
-    delete userStates[userId];
-    await saveMovieWithPoster(
-      fileId,
-      fileType,
-      movieName,
-      movieCode,
-      null,
-      msg,
-      chatId,
-      userId,
-      userState.movieGenre,
-      userState.movieYear,
-      userState.movieLanguage,
-      userState.movieDuration,
-    );
+    // NEW: after duration we won't ask for code in this simplified flow
+    // (older multi-step flow removed in favor of single-description preview)
   } else if (msg.video || msg.document) {
     // Video yoki fayl yuborilgan
     const fileId = msg.video?.file_id || msg.document?.file_id;
     const fileType = msg.video ? "video" : "document";
-
-    // Foydalanuvchi holatini saqlash
+    // Save state -> ask for a single description (izoh)
     userStates[userId] = {
-      status: "waiting_name",
+      status: "waiting_description",
       fileId: fileId,
       fileType: fileType,
     };
 
     bot.sendMessage(
       chatId,
-      "📝 Kino uchun nom kiriting (masalan: Titanic, Avatar va h.k.):",
+      "📝 Iltimos kino uchun bitta xabarda izoh yuboring (hammasini shu xabarda yozing):",
     );
   } else if (msg.photo) {
     // Photo yuborilgan
     const fileId = msg.photo[msg.photo.length - 1].file_id;
     const fileType = "photo";
-
-    // Foydalanuvchi holatini saqlash
     userStates[userId] = {
-      status: "waiting_name",
+      status: "waiting_description",
       fileId: fileId,
       fileType: fileType,
     };
 
     bot.sendMessage(
       chatId,
-      "📝 Kino uchun nom kiriting (masalan: Titanic, Avatar va h.k.):",
+      "📝 Iltimos kino uchun bitta xabarda izoh yuboring (hammasini shu xabarda yozing):",
     );
   } else if (msg.text) {
-    // Kino kodini yordamida qidirish
-    const movieCode = msg.text.toUpperCase().trim();
-    const found = await getMovieByCode(movieCode);
+    // Kino raqami yoki kodi orqali qidirish
+    const input = msg.text.trim();
+    const isNumber = /^\d+$/.test(input);
+
+    let found = null;
+
+    if (isNumber && userState && userState.status === "viewing_top") {
+      // Numeric selection while viewing top list -> map to pageList
+      const idx = parseInt(input) - 1;
+      const pageList = userState.pageList || [];
+      if (idx >= 0 && idx < pageList.length) {
+        const movieCode = pageList[idx];
+        found = await getMovieByCode(movieCode);
+      } else {
+        bot.sendMessage(
+          chatId,
+          `❌ Noto'g'ri raqam! Iltimos 1 dan ${pageList.length} gacha bo'lgan raqam yuboring.`,
+        );
+        return;
+      }
+    } else {
+      // Treat input as movie code (numeric codes supported too)
+      const movieCode = input.toUpperCase();
+      found = await getMovieByCode(movieCode);
+    }
 
     if (found) {
       const sendMethod =
@@ -766,23 +957,37 @@ bot.on("message", async (msg) => {
             ? "sendPhoto"
             : "sendDocument";
 
+      // Use description if provided, otherwise use old template format
+      const caption = found.description
+        ? `📋 <b>${found.name}</b>\n\n${found.description}\n\n🔑 Kod: <code>${found.code}</code>`
+        : `🎬 <b>${found.name}</b>\n\n🎭 Janr: ${found.genre || "Noma'lum"}\n📅 Yili: ${found.year || "Noma'lum"}\n🌍 Tili: ${found.language || "Noma'lum"}\n⏱️ Davomiyligi: ${found.duration || "Noma'lum"}\n\n🔑 Kod: <code>${found.code}</code>`;
+
       const sendOptions = {
-        caption: `🎬 <b>${found.name}</b>\n🔑 Kod: <code>${found.code}</code>\n🎭 Janr: ${found.genre || "Noma'lum"}\n📅 Yili: ${found.year || "Noma'lum"}\n🌍 Tili: ${found.language || "Noma'lum"}\n⏱️ Davomiyligi: ${found.duration || "Noma'lum"}\n⏰ Sana: ${new Date(found.uploaded_at).toLocaleString("uz-UZ")}`,
+        caption: caption,
         parse_mode: "HTML",
       };
+
+      // Increment view counter
+      try {
+        await incrementMovieViews(found.code);
+      } catch (e) {
+        console.error("View increment error:", e && e.message ? e.message : e);
+      }
 
       // Agar obloshka bo'lsa qo'shish
       if (found.poster_file_id) {
         sendOptions.thumb = found.poster_file_id;
       }
 
-      bot[sendMethod](chatId, found.file_id, sendOptions);
+      await bot[sendMethod](chatId, found.file_id, sendOptions);
+
+      // clear viewing_top state to avoid numeric inputs being interpreted
+      if (userState && userState.status === "viewing_top") {
+        delete userStates[userId];
+      }
     } else {
-      bot.sendMessage(
-        chatId,
-        `❌ Kod <code>${movieCode}</code> topilmadi!\n\n💡 Iltimos to'g'ri kino kodini yuboring yoki "📋 Kinolarni ko'r" tugmasini bosing.`,
-        { parse_mode: "HTML" },
-      );
+      const errorMsg = `❌ Kod <code>${input}</code> topilmadi!\n\n💡 Iltimos to'g'ri kino kodini yuboring.`;
+      bot.sendMessage(chatId, errorMsg, { parse_mode: "HTML" });
     }
   }
 });
@@ -828,13 +1033,12 @@ bot.on("callback_query", async (query) => {
     // Bosh menyu - /start komandasi
     delete userStates[userId];
 
-    let startMsg = `Salom 👋 Xush kelibsiz! Kinolar botiga xush kelibsiz!\n\n🆔 Sizning ID: <code>${userId}</code>`;
+    let startMsg = `Salom 👋 Xush kelibsiz! Kinolar botiga xush kelibsiz!\n\n🆔 Sizning ID: <code>${userId}</code>\n\nKino kodini yuboring yoki Top kinolarni tomosha qiling.`;
 
     const options = {
       reply_markup: {
         inline_keyboard: [
-          [{ text: "📋 Kinolarni ko'r", callback_data: "list_movies" }],
-          [{ text: "🔍 Kino qidirish", callback_data: "search_movie" }],
+          [{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }],
         ],
       },
     };
@@ -946,7 +1150,6 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
-          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1018,6 +1221,75 @@ bot.on("callback_query", async (query) => {
       parse_mode: "HTML",
       ...options,
     });
+  } else if (query.data.startsWith("top_movies_")) {
+    // Top kinolar pagination
+    const pageStr = query.data.replace("top_movies_", "");
+    const page = parseInt(pageStr) || 0;
+    const moviesPerPage = 5;
+    const totalMovies = await getMoviesCount();
+
+    if (totalMovies === 0) {
+      bot.answerCallbackQuery(query.id, {
+        text: "📭 Hozircha kinolar yo'q!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    // Jami sahifalar
+    const totalPages = Math.ceil(totalMovies / moviesPerPage);
+    const startIdx = page * moviesPerPage;
+    const endIdx = startIdx + moviesPerPage;
+    // fetch only required page ordered by views desc
+    const paginatedMovies = await getTopMovies(moviesPerPage, startIdx);
+
+    // Save currently displayed page codes for numeric selection
+    userStates[userId] = {
+      status: "viewing_top",
+      page: page,
+      pageList: paginatedMovies.map((m) => m.code),
+    };
+
+    let movieList = `🏆 <b>Top kinolar</b>\n\n`;
+    paginatedMovies.forEach((movie, idx) => {
+      const actualIndex = startIdx + idx + 1;
+      movieList += `${actualIndex}. <b>${movie.name}</b>\n   👁️ ${movie.views || 0} korish\n\n`;
+    });
+    movieList +=
+      "⬇️ Korsatilgan 5 ta kinoning raqamini yuboring kinoni olish uchun!";
+
+    const buttons = [];
+
+    // Orqaga tugmasi
+    if (page > 0) {
+      buttons.push({
+        text: "⬅️ Orqaga",
+        callback_data: `top_movies_${page - 1}`,
+      });
+    }
+
+    // Oldinga tugmasi
+    if (endIdx < totalMovies) {
+      buttons.push({
+        text: "Oldinga ➡️",
+        callback_data: `top_movies_${page + 1}`,
+      });
+    }
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [buttons.length > 0 ? buttons : []].filter(
+          (row) => row.length > 0,
+        ),
+      },
+    };
+
+    bot.editMessageText(movieList, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: "HTML",
+      ...options,
+    });
   } else if (query.data === "list_movies") {
     const movies = await getAllMovies();
     if (movies.length === 0) {
@@ -1061,7 +1333,6 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
-          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1073,7 +1344,7 @@ bot.on("callback_query", async (query) => {
       ...options,
     });
   } else if (query.data === "broadcast_menu") {
-    // Reklama yuborish - only main or head admin
+    // Reklama menyu - ikkita variant
     const adminRole = await getAdminRole(userId);
     const isMainAdmin = userId === ADMIN_USER_ID;
     const isHeadAdmin = adminRole === "katta_admin";
@@ -1087,18 +1358,62 @@ bot.on("callback_query", async (query) => {
       return;
     }
 
-    // Reklama yuborish
+    delete userStates[userId];
+
     const options = {
       reply_markup: {
         inline_keyboard: [
+          [
+            {
+              text: "📤 Tayyor postni yuborish",
+              callback_data: "broadcast_forward",
+            },
+          ],
+          [
+            {
+              text: "🎨 Reklama tayyorlash",
+              callback_data: "broadcast_create",
+            },
+          ],
           [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
-          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
 
     bot.editMessageText(
-      "📢 <b>Reklama yuborish</b>\n\nReklama matnini yuboring. Bu ALL foydalanuvchilarga jo'natiladi!\n\n⚠️ Faqat admin!",
+      "📢 <b>Reklama menyu</b>\n\n🔹 <b>Tayyor postni yuborish</b> - Biror joydan forward qilingan postni barcha foydalanuvchilarga jo'natish\n\n🔹 <b>Reklama tayyorlash</b> - Rasm/video/file va text bilan reklama yaratib jo'natish",
+      {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: "HTML",
+        ...options,
+      },
+    );
+  } else if (query.data === "broadcast_forward") {
+    // Tayyor postni forward qilish
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasBroadcastAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasBroadcastAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "broadcast_menu" }],
+        ],
+      },
+    };
+
+    bot.editMessageText(
+      "📤 <b>Tayyor postni yuborish</b>\n\nBiror joydan (kanal, guruh, private) bitta xabarni <b>FORWARD</b> qiling. Bot uni barcha foydalanuvchilarga jo'natadi!",
       {
         chat_id: chatId,
         message_id: query.message.message_id,
@@ -1107,10 +1422,231 @@ bot.on("callback_query", async (query) => {
       },
     );
 
-    // Broadcast mode
     userStates[userId] = {
-      status: "waiting_broadcast",
+      status: "waiting_broadcast_forward",
     };
+  } else if (query.data === "broadcast_create") {
+    // Reklama tayyorlash
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasBroadcastAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasBroadcastAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "❌ Kerak emas",
+              callback_data: "broadcast_create_skip_media",
+            },
+          ],
+          [{ text: "🔙 Orqaga", callback_data: "broadcast_menu" }],
+        ],
+      },
+    };
+
+    bot.editMessageText(
+      "🎨 <b>Reklama tayyorlash</b>\n\n1️⃣ Rasm, video yoki file yuboring (majburiy emas):",
+      {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: "HTML",
+        ...options,
+      },
+    );
+
+    userStates[userId] = {
+      status: "waiting_broadcast_create_media",
+    };
+  } else if (query.data === "broadcast_create_skip_media") {
+    // Media kerak emas, to'g'ridan to'g'ri textga o'tish
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasBroadcastAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasBroadcastAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    userStates[userId] = {
+      status: "waiting_broadcast_create_text",
+      broadcastFileId: null,
+      broadcastFileType: null,
+    };
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "broadcast_menu" }],
+        ],
+      },
+    };
+
+    bot.editMessageText("📝 <b>Reklama matnini yuboring</b>:", {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: "HTML",
+      ...options,
+    });
+  } else if (query.data === "broadcast_confirm") {
+    // Reklama tasdiqlash va yuborish
+    const userState = userStates[userId];
+    if (!userState || userState.status !== "broadcast_preview") {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Sessiya tugagan!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const broadcastFileId = userState.broadcastFileId;
+    const broadcastFileType = userState.broadcastFileType;
+    const broadcastText = userState.broadcastText || "";
+    const allUsers = await getAllUsers();
+
+    bot.answerCallbackQuery(query.id, {
+      text: "📢 Jo'natilmoqda...",
+    });
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    // Barcha userlarga yuborish
+    for (const user of allUsers) {
+      try {
+        if (broadcastFileType === "photo" && broadcastFileId) {
+          await bot.sendPhoto(user.user_id, broadcastFileId, {
+            caption: broadcastText || "",
+            parse_mode: "HTML",
+          });
+        } else if (broadcastFileType === "video" && broadcastFileId) {
+          await bot.sendVideo(user.user_id, broadcastFileId, {
+            caption: broadcastText || "",
+            parse_mode: "HTML",
+          });
+        } else if (broadcastFileType === "document" && broadcastFileId) {
+          await bot.sendDocument(user.user_id, broadcastFileId, {
+            caption: broadcastText || "",
+            parse_mode: "HTML",
+          });
+        } else if (broadcastText) {
+          await bot.sendMessage(user.user_id, broadcastText, {
+            parse_mode: "HTML",
+          });
+        }
+        successCount++;
+      } catch (err) {
+        errorCount++;
+        console.log(`Broadcast xatosi ${user.user_id} ga:`, err.message);
+      }
+    }
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "broadcast_menu" }],
+        ],
+      },
+    };
+
+    bot.sendMessage(
+      chatId,
+      `✅ Broadcast tugallandi!\n\n✔️ Muvaffaq: ${successCount}\n❌ Xato: ${errorCount}`,
+      options,
+    );
+
+    delete userStates[userId];
+  } else if (query.data === "confirm_upload") {
+    // Admin confirmed the upload preview -> save movie
+    const u = userStates[userId];
+    if (!u || u.status !== "upload_preview") {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Sessiya tugagan!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    // use provided code if available, otherwise generate simple unique code
+    const movieCode =
+      u.code ||
+      `KINO${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    const movieName =
+      (u.description || "").split("\n")[0].slice(0, 100) || "No title";
+
+    try {
+      await saveMovieWithPoster(
+        u.fileId,
+        u.fileType,
+        movieName,
+        movieCode,
+        null,
+        query,
+        chatId,
+        userId,
+        u.description,
+      );
+      bot.answerCallbackQuery(query.id, { text: "✅ Kino kanalga saqlandi!" });
+    } catch (err) {
+      console.error("Save movie error:", err);
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Saqlashda xato!",
+        show_alert: true,
+      });
+    }
+    delete userStates[userId];
+  } else if (query.data === "cancel_upload") {
+    // Admin cancelled upload preview
+    delete userStates[userId];
+    bot.answerCallbackQuery(query.id, { text: "❌ Yuklash bekor qilindi" });
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Admin panel", callback_data: "admin_panel" }],
+        ],
+      },
+    };
+    bot.sendMessage(chatId, "❌ Yuklash bekor qilindi.", options);
+  } else if (query.data === "broadcast_cancel") {
+    // Reklama tayyorlanishini bekor qilish
+    const userState = userStates[userId];
+    if (!userState || userState.status !== "broadcast_preview") {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Sessiya tugagan!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    delete userStates[userId];
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
+        ],
+      },
+    };
+
+    bot.sendMessage(
+      chatId,
+      "❌ Reklama bekor qilindi!\n\n🔐 Admin panelga qaytish uchun tugmasini bosing.",
+      options,
+    );
   } else if (query.data === "admin_manage") {
     // Admin boshqaruvi - only main or head admin
     const adminRole = await getAdminRole(userId);
@@ -1230,7 +1766,6 @@ bot.on("callback_query", async (query) => {
     });
 
     buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_manage" }]);
-    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
 
     const options = {
       reply_markup: {
@@ -1283,7 +1818,6 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_manage" }],
-          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1308,7 +1842,6 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "admin_manage" }],
-          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1330,12 +1863,11 @@ bot.on("callback_query", async (query) => {
         text: "✅ Siz barcha kanallarga obuna bo'lgansiz!",
       });
       // Yangi requestni start menu-ga jo'natsa qilish
-      const startMsg = `Salom 👋 Xush kelibsiz! Kinolar botiga xush kelibsiz!\n\n🆔 Sizning ID: <code>${userId}</code>`;
+      const startMsg = `Salom 👋 Xush kelibsiz! Kinolar botiga xush kelibsiz!\n\n🆔 Sizning ID: <code>${userId}</code>\n\nKino kodini yuboring yoki Top kinolarni tomosha qiling.`;
       const options = {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "📋 Kinolarni ko'r", callback_data: "list_movies" }],
-            [{ text: "🔍 Kino qidirish", callback_data: "search_movie" }],
+            [{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }],
           ],
         },
       };
@@ -1404,9 +1936,6 @@ bot.on("callback_query", async (query) => {
       });
       msg += `\n💡 Foydalanuvchilar bu kanallarga obuna bo'lmaguncha bot-dan foydalana olmaydi`;
     }
-
-    // Bosh menu tugmasini qo'shish
-    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
 
     const options = {
       reply_markup: {
@@ -1479,7 +2008,6 @@ bot.on("callback_query", async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔙 Orqaga", callback_data: "subscription_manage" }],
-          [{ text: "🏠 Bosh menu", callback_data: "admin_panel" }],
         ],
       },
     };
@@ -1507,7 +2035,6 @@ bot.on("callback_query", async (query) => {
     });
 
     buttons.push([{ text: "🔙 Orqaga", callback_data: "subscription_manage" }]);
-    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
 
     const options = {
       reply_markup: {
@@ -1542,7 +2069,6 @@ bot.on("callback_query", async (query) => {
     }
 
     buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_panel" }]);
-    buttons.push([{ text: "🏠 Bosh menu", callback_data: "admin_panel" }]);
 
     let msg = "🔐 <b>Majburiy obuna boshqaruvi</b>\n\n";
     msg += `Hozirda ${channels.length}ta kanal majburiy:\n\n`;
