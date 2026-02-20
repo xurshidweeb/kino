@@ -41,7 +41,7 @@ http
   })
   .listen(PORT);
 
-let bot = new TelegramBot(token, { polling: false });
+let bot = new TelegramBot(token, { polling: true });
 
 // After all handlers are registered, initialize DB and start polling
 (async () => {
