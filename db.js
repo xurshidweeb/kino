@@ -72,6 +72,13 @@ async function init() {
       )
     `);
 
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    `);
+
     // Migration: ensure 'channel_title' column exists (for older DBs)
     try {
       await pgPool.query(
@@ -175,6 +182,13 @@ async function init() {
       )
     `);
 
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    `);
+
     // Migration: ensure 'role' column exists (for older DBs)
     try {
       const cols = sqliteDb.prepare("PRAGMA table_info(admins)").all();
@@ -223,6 +237,35 @@ async function init() {
       // ignore
     }
   }
+}
+
+// Settings
+async function getSetting(key) {
+  if (usePostgres) {
+    const res = await pgPool.query(`SELECT value FROM settings WHERE key = $1`, [
+      key,
+    ]);
+    return res.rows[0] ? res.rows[0].value : null;
+  }
+  const stmt = sqliteDb.prepare(`SELECT value FROM settings WHERE key = ?`);
+  const row = stmt.get(key);
+  return row ? row.value : null;
+}
+
+async function setSetting(key, value) {
+  if (usePostgres) {
+    await pgPool.query(
+      `INSERT INTO settings (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, value],
+    );
+    return { success: true };
+  }
+  const stmt = sqliteDb.prepare(
+    `INSERT INTO settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  );
+  return stmt.run(key, value);
 }
 
 // Users
@@ -517,6 +560,8 @@ module.exports = {
   addChannel,
   getAllChannels,
   deleteChannel,
+  getSetting,
+  setSetting,
   close: async () => {
     try {
       if (usePostgres && pgPool) await pgPool.end();

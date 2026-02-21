@@ -22,6 +22,8 @@ const {
   addChannel,
   getAllChannels,
   deleteChannel,
+  getSetting,
+  setSetting,
   close,
 } = require("./db");
 const PORT = process.env.PORT || 3000;
@@ -62,10 +64,33 @@ healthServer.listen(PORT);
 
 let bot = new TelegramBot(token, { polling: false });
 
+let BOT_USERNAME = null;
+
+async function getPromoChannel() {
+  const raw = await getSetting("promo_channel");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.id) return parsed;
+  } catch (e) {}
+  return { id: raw };
+}
+
+async function setPromoChannel(channel) {
+  return setSetting("promo_channel", JSON.stringify(channel));
+}
+
 // After all handlers are registered, initialize DB and start polling
 (async () => {
   try {
     await init();
+
+    try {
+      const me = await bot.getMe();
+      BOT_USERNAME = me && me.username ? String(me.username) : null;
+    } catch (e) {
+      BOT_USERNAME = null;
+    }
 
     // Debug: Token qabul qilindi
     console.log("🤖 Bot ishga tushmoqda...");
@@ -471,7 +496,7 @@ bot.on("message", async (msg) => {
     userState &&
     userState.status === "waiting_broadcast_create_text"
   ) {
-    // Reklama tayyorlash - text qabul qilish va preview ko'rsatish
+    // Reklama tayyorlash - matn qabul qilish
     if (userId !== ADMIN_USER_ID && !(await getAdminRole(userId))) {
       bot.sendMessage(chatId, "❌ Notogri buydaomish!");
       delete userStates[userId];
@@ -539,6 +564,112 @@ bot.on("message", async (msg) => {
       console.error("Preview xatosi:", err.message);
       bot.sendMessage(chatId, "❌ Preview ko'rsatishda xato yuz berdi!");
       delete userStates[userId];
+    }
+    return;
+  } else if (
+    userState &&
+    userState.status === "waiting_promo_channel_forward"
+  ) {
+    // Admin kanalni forward qilib sozlash
+    try {
+      if (msg.forward_from_chat && msg.forward_from_chat.type === "channel") {
+        const channelId = String(msg.forward_from_chat.id);
+        const channelUsername = msg.forward_from_chat.username
+          ? String(msg.forward_from_chat.username)
+          : null;
+        const channelTitle =
+          msg.forward_from_chat.title || channelUsername || channelId;
+
+        await setPromoChannel({
+          id: channelId,
+          username: channelUsername,
+          title: channelTitle,
+        });
+
+        delete userStates[userId];
+
+        await bot.sendMessage(
+          chatId,
+          `✅ Admin kanal saqlandi!\n\n📢 <b>${channelTitle}</b>\n🔑 ID: <code>${channelId}</code>${channelUsername ? `\n🔗 @${channelUsername}` : ""}`,
+          { parse_mode: "HTML", ...mainMenuOptions },
+        );
+        return;
+      }
+
+      throw new Error(
+        "Admin kanal qo'shish uchun o'sha kanaldan bitta post/xabarni botga FORWARD qiling.",
+      );
+    } catch (err) {
+      await bot.sendMessage(
+        chatId,
+        `❌ Admin kanal qo'shishda xato!\n\nXato: ${err.message}`,
+      );
+      delete userStates[userId];
+      return;
+    }
+  } else if (userState && userState.status === "waiting_promo_trailer") {
+    // Promo kanalga treyler yuborish
+    const promo = await getPromoChannel();
+    if (!promo || !promo.id) {
+      delete userStates[userId];
+      await bot.sendMessage(
+        chatId,
+        "❌ Admin kanal sozlanmagan. Avval admin paneldan Admin kanalni sozlang.",
+      );
+      return;
+    }
+
+    const trailerFileId =
+      msg.video?.file_id || msg.photo?.slice(-1)[0]?.file_id;
+    const trailerType = msg.video ? "video" : msg.photo ? "photo" : null;
+
+    if (!trailerFileId || !trailerType) {
+      await bot.sendMessage(
+        chatId,
+        "❌ Iltimos treyler uchun rasm yoki qisqa video yuboring.",
+      );
+      return;
+    }
+
+    const movieCode = userState.movieCode;
+    const description = userState.description || "";
+
+    let watchUrl = null;
+    if (BOT_USERNAME) {
+      watchUrl = `https://t.me/${BOT_USERNAME}?start=movie_${encodeURIComponent(movieCode)}`;
+    }
+
+    const replyMarkup = watchUrl
+      ? {
+          inline_keyboard: [[{ text: "👀 Ko'rish", url: watchUrl }]],
+        }
+      : null;
+
+    try {
+      if (trailerType === "video") {
+        await bot.sendVideo(promo.id, trailerFileId, {
+          caption: description,
+          parse_mode: "HTML",
+          reply_markup: replyMarkup,
+        });
+      } else {
+        await bot.sendPhoto(promo.id, trailerFileId, {
+          caption: description,
+          parse_mode: "HTML",
+          reply_markup: replyMarkup,
+        });
+      }
+
+      delete userStates[userId];
+      await bot.sendMessage(chatId, "✅ Kanalga ulashildi!", {
+        ...mainMenuOptions,
+      });
+    } catch (err) {
+      console.error("Promo send error:", err);
+      delete userStates[userId];
+      await bot.sendMessage(chatId, "❌ Kanalga yuborishda xato yuz berdi.", {
+        ...mainMenuOptions,
+      });
     }
     return;
   } else if (userState && userState.status === "waiting_channel_link") {
@@ -683,7 +814,66 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (msg.text === "/start") {
+  if (msg.text && msg.text.startsWith("/start")) {
+    const parts = msg.text.trim().split(/\s+/);
+    const payload = parts.length > 1 ? parts.slice(1).join(" ") : null;
+
+    // Deep-link payload: /start movie_<CODE>
+    if (payload && payload.startsWith("movie_")) {
+      const movieCode = payload.replace("movie_", "").trim().toUpperCase();
+      const found = await getMovieByCode(movieCode);
+      if (found) {
+        const sendMethod =
+          found.file_type === "video"
+            ? "sendVideo"
+            : found.file_type === "photo"
+              ? "sendPhoto"
+              : "sendDocument";
+
+        let viewsToShow = Number(found.views || 0);
+        try {
+          await incrementMovieViews(found.code);
+        } catch (e) {
+          console.error(
+            "View increment error:",
+            e && e.message ? e.message : e,
+          );
+          viewsToShow = Number(found.views || 0);
+        }
+
+        const effectiveDescription = found.description || found.genre;
+        const caption = effectiveDescription
+          ? `${effectiveDescription}\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`
+          : `🎬 <b>${found.name}</b>\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`;
+
+        const sendOptions = {
+          caption,
+          parse_mode: "HTML",
+        };
+
+        if (found.poster_file_id) {
+          sendOptions.thumb = found.poster_file_id;
+        }
+
+        try {
+          await bot[sendMethod](chatId, found.file_id, sendOptions);
+        } catch (err) {
+          console.error(
+            "Send movie error:",
+            err && err.message ? err.message : err,
+          );
+          await bot.sendMessage(
+            chatId,
+            "❌ Kino yuborishda xato yuz berdi. Iltimos keyinroq urinib ko'ring.",
+          );
+        }
+      } else {
+        const errorMsg = `❌ Kod <code>${movieCode}</code> topilmadi!\n\n💡 Iltimos to'g'ri kino kodini yuboring.`;
+        bot.sendMessage(chatId, errorMsg, { parse_mode: "HTML" });
+      }
+      return;
+    }
+
     // Check subscription
     const isSubbed = await isSubscribedToAllChannels(userId);
 
@@ -941,12 +1131,12 @@ bot.on("message", async (msg) => {
             : "sendDocument";
 
       // Increment view counter first so we can show updated views in caption
-      let viewsToShow = (found.views || 0) + 1;
+      let viewsToShow = Number(found.views || 0);
       try {
         await incrementMovieViews(found.code);
       } catch (e) {
         console.error("View increment error:", e && e.message ? e.message : e);
-        viewsToShow = found.views || 0;
+        viewsToShow = Number(found.views || 0);
       }
 
       // Use description if provided; fallback to old "genre" value for previously saved items
@@ -1039,7 +1229,9 @@ bot.on("callback_query", async (query) => {
 
     const options = {
       reply_markup: {
-        inline_keyboard: [[{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }]],
+        inline_keyboard: [
+          [{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }],
+        ],
       },
     };
     if (userId === ADMIN_USER_ID || (await getAdminRole(userId))) {
@@ -1333,7 +1525,7 @@ bot.on("callback_query", async (query) => {
     );
   } else if (query.data === "admin_stats") {
     // Admin statistikasi - only main or head admin
-    const adminRole = getAdminRole(userId);
+    const adminRole = await getAdminRole(userId);
     const isMainAdmin = userId === ADMIN_USER_ID;
     const isHeadAdmin = adminRole === "katta_admin";
     const hasStatsAccess = isMainAdmin || isHeadAdmin;
@@ -1634,6 +1826,27 @@ bot.on("callback_query", async (query) => {
         u.description,
       );
       bot.answerCallbackQuery(query.id, { text: "✅ Kino kanalga saqlandi!" });
+
+      // Ask if we should share to promo/admin channel
+      userStates[userId] = {
+        status: "ask_share_promo",
+        movieCode,
+        description: u.description || "",
+      };
+      await bot.sendMessage(
+        chatId,
+        "📢 Yangi kinoni admin kanalga ulashamizmi?",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "✅ Ha", callback_data: "promo_share_yes" },
+                { text: "❌ Yo'q", callback_data: "promo_share_no" },
+              ],
+            ],
+          },
+        },
+      );
     } catch (err) {
       console.error("Save movie error:", err);
       bot.answerCallbackQuery(query.id, {
@@ -1641,7 +1854,47 @@ bot.on("callback_query", async (query) => {
         show_alert: true,
       });
     }
-    delete userStates[userId];
+    // keep state for promo share question if saved
+  } else if (query.data === "promo_share_no") {
+    if (userState && userState.status === "ask_share_promo") {
+      delete userStates[userId];
+    }
+    await bot.answerCallbackQuery(query.id, { text: "✅ Bekor qilindi" });
+  } else if (query.data === "promo_share_yes") {
+    if (!userState || userState.status !== "ask_share_promo") {
+      await bot.answerCallbackQuery(query.id, {
+        text: "❌ Sessiya tugagan!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const promo = await getPromoChannel();
+    if (!promo || !promo.id) {
+      delete userStates[userId];
+      await bot.answerCallbackQuery(query.id, {
+        text: "❌ Admin kanal sozlanmagan!",
+        show_alert: true,
+      });
+      await bot.sendMessage(
+        chatId,
+        "❌ Admin kanal sozlanmagan. Admin panel -> Admin boshqaruvi -> Admin kanal bo'limidan sozlang.",
+        { ...mainMenuOptions },
+      );
+      return;
+    }
+
+    userStates[userId] = {
+      status: "waiting_promo_trailer",
+      movieCode: userState.movieCode,
+      description: userState.description,
+    };
+
+    await bot.answerCallbackQuery(query.id, { text: "✅ Treyler yuboring" });
+    await bot.sendMessage(
+      chatId,
+      "🎞️ Endi shu kino uchun treyler yuboring (rasm yoki qisqa video):",
+    );
   } else if (query.data === "cancel_upload") {
     // Admin cancelled upload preview
     delete userStates[userId];
@@ -1682,7 +1935,41 @@ bot.on("callback_query", async (query) => {
       options,
     );
   } else if (query.data === "admin_manage") {
-    // Admin boshqaruvi - only main or head admin
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasManageAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasManageAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const options = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "👤 Admin user", callback_data: "admin_manage_users" },
+            { text: "📢 Admin kanal", callback_data: "admin_channel_manage" },
+          ],
+          [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
+        ],
+      },
+    };
+
+    bot.editMessageText(
+      "👤 <b>Admin boshqaruvi</b>\n\nKerakli bo'limni tanlang:",
+      {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: "HTML",
+        ...options,
+      },
+    );
+  } else if (query.data === "admin_manage_users") {
     const adminRole = await getAdminRole(userId);
     const isMainAdmin = userId === ADMIN_USER_ID;
     const isHeadAdmin = adminRole === "katta_admin";
@@ -1703,13 +1990,13 @@ bot.on("callback_query", async (query) => {
             { text: "➕ Admin qo'shish", callback_data: "add_admin" },
             { text: "❌ Admin olib tashlash", callback_data: "remove_admin" },
           ],
-          [{ text: "🔙 Orqaga", callback_data: "admin_panel" }],
+          [{ text: "🔙 Orqaga", callback_data: "admin_manage" }],
         ],
       },
     };
 
     const allAdmins = await getAllAdmins();
-    let adminList = "👤 <b>Admin Boshqaruvi</b>\n\n";
+    let adminList = "👤 <b>Admin User</b>\n\n";
     adminList += `Hozirgi adminlar: ${allAdmins.length}\n\n`;
     allAdmins.forEach((admin, index) => {
       const roleText =
@@ -1723,6 +2010,82 @@ bot.on("callback_query", async (query) => {
       parse_mode: "HTML",
       ...options,
     });
+  } else if (query.data === "admin_channel_manage") {
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasManageAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasManageAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const promo = await getPromoChannel();
+    const buttons = [];
+
+    if (!promo || !promo.id) {
+      buttons.push([
+        { text: "➕ Qo'shish", callback_data: "admin_channel_add" },
+      ]);
+    } else {
+      buttons.push([
+        { text: "♻️ O'zgartirish", callback_data: "admin_channel_replace" },
+      ]);
+    }
+    buttons.push([{ text: "🔙 Orqaga", callback_data: "admin_manage" }]);
+
+    let msg = "📢 <b>Admin kanal</b>\n\n";
+    if (!promo || !promo.id) {
+      msg += "❌ Hozircha admin kanal sozlanmagan.";
+    } else {
+      const title = promo.title || promo.username || promo.id;
+      msg += `✅ Hozirgi admin kanal:\n<b>${title}</b>\n🔑 ID: <code>${promo.id}</code>`;
+      if (promo.username) msg += `\n🔗 @${promo.username}`;
+    }
+    msg +=
+      "\n\n💡 Bu kanalga kinolar treyleri va izohi reklama sifatida joylanadi.";
+
+    bot.editMessageText(msg, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: buttons },
+    });
+  } else if (
+    query.data === "admin_channel_add" ||
+    query.data === "admin_channel_replace"
+  ) {
+    const adminRole = await getAdminRole(userId);
+    const isMainAdmin = userId === ADMIN_USER_ID;
+    const isHeadAdmin = adminRole === "katta_admin";
+    const hasManageAccess = isMainAdmin || isHeadAdmin;
+
+    if (!hasManageAccess) {
+      bot.answerCallbackQuery(query.id, {
+        text: "❌ Notogri buydaomish!",
+        show_alert: true,
+      });
+      return;
+    }
+
+    userStates[userId] = { status: "waiting_promo_channel_forward" };
+    bot.editMessageText(
+      "📢 Admin kanalni sozlash:\n\nQo'shmoqchi bo'lgan kanalingizdan bitta post/xabarni botga <b>FORWARD</b> qiling.",
+      {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔙 Orqaga", callback_data: "admin_channel_manage" }],
+          ],
+        },
+      },
+    );
   } else if (query.data === "add_admin") {
     // Admin qo'shish - type so'rash
     const adminRole = await getAdminRole(userId);
