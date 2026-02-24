@@ -1,0 +1,107 @@
+{
+  "totalRequests": 2,
+  "successfulRequests": 2,
+  "failedRequests": 0,
+  "activeUsers": [
+    "6873538625"
+  ],
+  "commandCounts": {
+    "message": 1,
+    "callback": 1
+  },
+  "responseTimes": [
+    {
+      "time": 0,
+      "timestamp": 1771972904809
+    },
+    {
+      "time": 0,
+      "timestamp": 1771972906385
+    }
+  ],
+  "errors": [],
+  "startTime": 1771972888170,
+  "hourlyStats": {
+    "3": {
+      "requests": 2,
+      "users": {}
+    }
+  },
+  "memoryUsage": [
+    {
+      "rss": 64925696,
+      "heapTotal": 17682432,
+      "heapUsed": 15329560,
+      "external": 2445508,
+      "arrayBuffers": 25672,
+      "timestamp": 1771972918185
+    },
+    {
+      "rss": 65318912,
+      "heapTotal": 18206720,
+      "heapUsed": 15695680,
+      "external": 2446854,
+      "arrayBuffers": 27018,
+      "timestamp": 1771972948201
+    },
+    {
+      "rss": 65622016,
+      "heapTotal": 18206720,
+      "heapUsed": 15990704,
+      "external": 2447778,
+      "arrayBuffers": 27942,
+      "timestamp": 1771972978207
+    },
+    {
+      "rss": 66072576,
+      "heapTotal": 17420288,
+      "heapUsed": 15664288,
+      "external": 2445946,
+      "arrayBuffers": 26110,
+      "timestamp": 1771973008214
+    },
+    {
+      "rss": 66076672,
+      "heapTotal": 17420288,
+      "heapUsed": 15949840,
+      "external": 2447308,
+      "arrayBuffers": 27472,
+      "timestamp": 1771973038222
+    },
+    {
+      "rss": 66076672,
+      "heapTotal": 17420288,
+      "heapUsed": 16247232,
+      "external": 2448670,
+      "arrayBuffers": 28834,
+      "timestamp": 1771973068228
+    },
+    {
+      "rss": 66220032,
+      "heapTotal": 17420288,
+      "heapUsed": 15855864,
+      "external": 2446400,
+      "arrayBuffers": 26564,
+      "timestamp": 1771973098238
+    },
+    {
+      "rss": 66248704,
+      "heapTotal": 17420288,
+      "heapUsed": 16146176,
+      "external": 2447762,
+      "arrayBuffers": 27926,
+      "timestamp": 1771973128248
+    },
+    {
+      "rss": 65740800,
+      "heapTotal": 17420288,
+      "heapUsed": 15766128,
+      "external": 2457316,
+      "arrayBuffers": 33848,
+      "timestamp": 1771973158258
+    }
+  ],
+  "databaseQueries": 1,
+  "apiCalls": 0,
+  "lastSaved": 1771973188182
+}
