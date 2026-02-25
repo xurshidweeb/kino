@@ -57,6 +57,7 @@ class BotMonitor {
   startMonitoring() {
     // Faqat har soatda statistikani saqlash
     setInterval(() => {
+      this.cleanupOldStats(); // Eski statistikani tozalash
       this.saveStats();
     }, 60 * 60 * 1000); // Har soatda
   }
@@ -193,7 +194,7 @@ class BotMonitor {
     // Keep only last 24 hours of hourly stats
     const currentHour = new Date().getHours();
     Object.keys(this.stats.hourlyStats).forEach(hour => {
-      if (Math.abs(hour - currentHour) > 12) {
+      if (Math.abs(hour - currentHour) > 24) {
         delete this.stats.hourlyStats[hour];
       }
     });
