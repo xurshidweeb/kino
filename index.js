@@ -947,11 +947,112 @@ bot.on("message", async (msg) => {
         ],
       },
     };
+    
+    // Agar admin bo'lsa, admin panel tugmasini qo'shish
+    if (userId === ADMIN_USER_ID || (await getAdminRole(userId))) {
+      options.reply_markup.inline_keyboard.push([
+        { text: "🔐 Admin paneli", callback_data: "admin_panel" },
+      ]);
+    }
 
     bot.sendMessage(chatId, startMsg, {
       parse_mode: "HTML",
       ...options,
     });
+  } else if (msg.text === "/top") {
+    // Top kinolar - /start komandasi kabi
+    delete userStates[userId];
+    
+    // Top kinolarni ko'rsatish
+    const page = 0;
+    const moviesPerPage = 5;
+    const totalMovies = await getMoviesCount();
+    
+    if (totalMovies === 0) {
+      bot.sendMessage(chatId, "📭 Hozircha kinolar yo'q!");
+      return;
+    }
+    
+    const paginatedMovies = await getTopMovies(moviesPerPage, page * moviesPerPage);
+    
+    userStates[userId] = {
+      status: "viewing_top",
+      page: page,
+      pageList: paginatedMovies.map((m) => m.code),
+    };
+    
+    let movieList = `🏆 <b>Top kinolar</b>\n\n`;
+    paginatedMovies.forEach((movie, idx) => {
+      const displayNumber = idx + 1;
+      movieList += `${displayNumber}. <b>${movie.name}</b>\nYuklangan ${movie.views || 0}\n\n`;
+    });
+    movieList += "Ko'rmoqchi bo'lgan kinoni tanlang!";
+    
+    const buttons = [];
+    
+    const movieButtons = [];
+    for (let i = 1; i <= paginatedMovies.length; i++) {
+      movieButtons.push({
+        text: `${i}`,
+        callback_data: `select_top_movie_${page}_${i - 1}`,
+      });
+    }
+    if (movieButtons.length > 0) {
+      buttons.push(movieButtons);
+    }
+    
+    // Navigatsiya tugmalari
+    const navButtons = [];
+    const startIdx = page * moviesPerPage;
+    const endIdx = startIdx + moviesPerPage;
+    
+    // Orqaga tugmasi
+    if (page > 0) {
+      navButtons.push({
+        text: "⬅️ Orqaga",
+        callback_data: `top_movies_${page - 1}`,
+      });
+    }
+    
+    // Oldinga tugmasi
+    if (endIdx < totalMovies) {
+      navButtons.push({
+        text: "Oldinga ➡️",
+        callback_data: `top_movies_${page + 1}`,
+      });
+    }
+    
+    if (navButtons.length > 0) {
+      buttons.push(navButtons);
+    }
+    
+    const options = {
+      reply_markup: {
+        inline_keyboard: buttons.filter((row) => row.length > 0),
+      },
+    };
+    
+    bot.sendMessage(chatId, movieList, {
+      parse_mode: "HTML",
+      ...options,
+    });
+  } else if (msg.text === "/kod") {
+    // Kod bo'yicha qidirish
+    delete userStates[userId];
+    
+    bot.sendMessage(chatId, "🔍 <b>Kino kodini kiriting:</b>\n\nMasalan: ABC123\n\nKino kodini yuboring, kinoni olish uchun!", {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "🔙 Orqaga", callback_data: "top_movies_0" }
+        ]]
+      }
+    });
+    
+    userStates[userId] = {
+      status: "waiting_code_search",
+      return_to: "top_movies_0"
+    };
   } else if (msg.text === "/panel") {
     // Admin panel - ID tekshirish
     const adminRole = await getAdminRole(userId);
@@ -960,7 +1061,7 @@ bot.on("message", async (msg) => {
     const isSmallAdmin = adminRole === "kichkina_admin";
 
     if (!isMainAdmin && !isHeadAdmin && !isSmallAdmin) {
-      bot.sendMessage(chatId, "❌ Notogri buydaomish yoki tilla topildi!");
+      bot.sendMessage(chatId, "❌ Notogri buyruq. Iltimos to'g'ri malumot kiriting!");
       return;
     }
 
@@ -1608,7 +1709,7 @@ bot.on("callback_query", async (query) => {
     if (endIdx < totalMovies) {
       navButtons.push({
         text: "Oldinga ➡️",
-        callback_data: `top_movies_${startIdx - 5}`,
+        callback_data: `top_movies_${page + 1}`,
       });
     }
     
@@ -1617,10 +1718,10 @@ bot.on("callback_query", async (query) => {
     }
 
     // Kod bo'yicha qidirish tugmasi - oxirgi qator
-    buttons.push([{
-      text: "🔍 Kod bo'yicha qidirish",
-      callback_data: "search_by_code",
-    }]);
+    // buttons.push([{
+    //   text: "🔍 Kod bo'yicha qidirish",
+    //   callback_data: "search_by_code",
+    // }]);
 
     const options = {
       reply_markup: {
