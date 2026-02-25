@@ -126,7 +126,10 @@ bot.on("polling_error", (error) => {
 
 // Kino uchun standart format
 function formatMovieCaption(movie, views) {
-  return `${movie.description || ''}\n\n🔒 Kod: ${movie.code}\n👁️ Jami ko'rishlar: ${views || 0} ta`;
+  const description = movie.description || movie.name || '';
+  return description 
+    ? `${description}\n\n🔒 Kod: ${movie.code}\n👁️ Jami ko'rishlar: ${views || 0} ta`
+    : `🎬 ${movie.name}\n\n🔒 Kod: ${movie.code}\n👁️ Jami ko'rishlar: ${views || 0} ta`;
 }
 
 // Graceful shutdown
@@ -163,11 +166,14 @@ async function saveMovieWithPoster(
 ) {
   const uploadedBy = msgOrQuery.from.username || msgOrQuery.from.first_name;
   let caption;
-  if (description) {
-    caption = `${description}\n\n🔑 Kod: <code>${movieCode}</code>`;
-  } else {
-    caption = `📽️ <b>${movieName}</b>\n\n🔑 Kod: <code>${movieCode}</code>`;
-  }
+  
+  // formatMovieCaption funksiyasidan foydalanamiz
+  const movie = {
+    name: movieName,
+    code: movieCode,
+    description: description
+  };
+  caption = formatMovieCaption(movie, 0);
 
   const sendMethod =
     fileType === "video"
@@ -890,10 +896,8 @@ bot.on("message", async (msg) => {
           viewsToShow = Number(found.views || 0);
         }
 
-        const effectiveDescription = found.description || '';
-        const caption = effectiveDescription
-          ? `${effectiveDescription}\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`
-          : `🎬 <b>${found.name}</b>\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`;
+        // formatMovieCaption funksiyasidan foydalanamiz
+        const caption = formatMovieCaption(found, viewsToShow);
 
         const sendOptions = {
           caption,
