@@ -34,7 +34,7 @@ const token = process.env.TELEGRAM_BOT_TOKEN;
 
 const mainMenuOptions = {
   reply_markup: {
-    inline_keyboard: [[{ text: "🏠 Bosh menu", callback_data: "start_menu" }]],
+    inline_keyboard: [],
   },
 };
 
@@ -166,7 +166,7 @@ async function saveMovieWithPoster(
   if (description) {
     caption = `${description}\n\n🔑 Kod: <code>${movieCode}</code>`;
   } else {
-    caption = `📽️ <b>${movieName}</b>\n\n🎭 Janr: ${movieGenre || "Noma'lum"}\n📅 Yili: ${movieYear || "Noma'lum"}\n🌍 Tili: ${movieLanguage || "Noma'lum"}\n⏱️ Davomiyligi: ${movieDuration || "Noma'lum"}\n📤 Yuklagan: ${uploadedBy}\n\n🔑 Kod: <code>${movieCode}</code>`;
+    caption = `📽️ <b>${movieName}</b>\n\n🔑 Kod: <code>${movieCode}</code>`;
   }
 
   const sendMethod =
@@ -617,7 +617,7 @@ bot.on("message", async (msg) => {
         await bot.sendMessage(
           chatId,
           `✅ Admin kanal saqlandi!\n\n📢 <b>${channelTitle}</b>\n🔑 ID: <code>${channelId}</code>${channelUsername ? `\n🔗 @${channelUsername}` : ""}`,
-          { parse_mode: "HTML", ...mainMenuOptions },
+          { parse_mode: "HTML" },
         );
         return;
       }
@@ -890,7 +890,7 @@ bot.on("message", async (msg) => {
           viewsToShow = Number(found.views || 0);
         }
 
-        const effectiveDescription = found.description || found.genre;
+        const effectiveDescription = found.description || '';
         const caption = effectiveDescription
           ? `${effectiveDescription}\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`
           : `🎬 <b>${found.name}</b>\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`;
@@ -1356,8 +1356,8 @@ bot.on("message", async (msg) => {
         viewsToShow = Number(found.views || 0);
       }
 
-      // Use description if provided; fallback to old "genre" value for previously saved items
-      const effectiveDescription = found.description || found.genre;
+      // Use description if provided; fallback to empty string
+      const effectiveDescription = found.description || '';
       const caption = formatMovieCaption(found, viewsToShow);
 
       const sendOptions = {
@@ -2135,11 +2135,11 @@ bot.on("callback_query", async (query) => {
         u.fileType,
         movieName,
         movieCode,
-        null,
+        u.description, // description ni to'g'ri uzatamiz
         query,
         chatId,
         userId,
-        u.description,
+        null,
         null,
         null,
         null,
@@ -2230,7 +2230,6 @@ bot.on("callback_query", async (query) => {
       await bot.sendMessage(
         chatId,
         "❌ Admin kanal sozlanmagan. Admin panel -> Admin boshqaruvi -> Admin kanal bo'limidan sozlang.",
-        { ...mainMenuOptions },
       );
       return;
     }
