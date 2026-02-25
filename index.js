@@ -730,7 +730,6 @@ bot.on("message", async (msg) => {
           reply_markup: {
             inline_keyboard: [
               [{ text: "🔙 Orqaga", callback_data: sourceView }],
-              [{ text: "🏠 Bosh menu", callback_data: "start_menu" }],
             ],
           },
         };
@@ -1289,6 +1288,30 @@ bot.on("message", async (msg) => {
     // Agar foydalanuvchi kino qo'shish jarayonida bo'lsa, qidirishni qilmasin
     if (userState && (userState.status === "waiting_description" || userState.status === "waiting_code" || userState.status === "upload_preview")) {
       return; // Kino qo'shish jarayonida bo'lsa, qidirishni qilmasin
+    }
+    
+    // Avval obunani tekshiramiz
+    const isSubbed = await isSubscribedToAllChannels(userId);
+    if (!isSubbed) {
+      const unsubscribedChannels = await getUnsubscribedChannels(userId);
+      const subButtons = await getSubscriptionButtons(userId);
+      
+      // Foydalanuvchi yuborgan kodni saqlaymiz
+      const input = msg.text.trim();
+      userStates[userId] = {
+        status: "waiting_subscription_for_movie",
+        movieCode: input.toUpperCase()
+      };
+      
+      bot.sendMessage(
+        chatId,
+        `⚠️ Bot-ni ishlatish uchun ${unsubscribedChannels.length > 0 ? unsubscribedChannels.length + ' ta' : ''} kanallarga obuna bo'lishingiz kerak:\n\n🔍 Siz yuborgan kod: <code>${input.toUpperCase()}</code>\n\nObuna bo'lgandan so'ng ushbu kino avtomatik yuboriladi!`,
+        {
+          reply_markup: { inline_keyboard: subButtons },
+          parse_mode: "HTML",
+        },
+      );
+      return;
     }
     
     const input = msg.text.trim();
@@ -2593,26 +2616,96 @@ bot.on("callback_query", async (query) => {
       bot.answerCallbackQuery(query.id, {
         text: "✅ Siz barcha kanallarga obuna bo'lgansiz!",
       });
-      // Yangi requestni start menu-ga jo'natsa qilish
-      const startMsg = `Salom ${msg.from.first_name} 👋\n\n@uzmoviesuz kanalining rasmiy botiga Xush kelibsiz! 😊\n\n🔑 Kino kodini yuboring yoki 🏆 Top kinolardan tanlang.`;
-      const options = {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }],
-          ],
-        },
-      };
-      if (userId === ADMIN_USER_ID || (await getAdminRole(userId))) {
-        options.reply_markup.inline_keyboard.push([
-          { text: "🔐 Admin paneli", callback_data: "admin_panel" },
-        ]);
+      
+      // Foydalanuvchi holatini tekshiramiz
+      const userState = userStates[userId];
+      
+      if (userState && userState.status === "waiting_subscription_for_movie") {
+        // Agar foydalanuvchi kino kodini yuborgan bo'lsa va obuna bo'lsa, kinoni yuboramiz
+        const movieCode = userState.movieCode;
+        console.log(`🔍 Kino kodini qidirish: ${movieCode}`);
+        const found = await getMovieByCode(movieCode);
+        console.log(`🎬 Kino topildi: ${found ? 'HA' : 'YOQ'}`);
+        
+        if (found) {
+          // Views ni oshirish
+          await incrementMovieViews(found.code);
+          
+          const sendMethod = found.file_type === "video" ? "sendVideo" : 
+                           found.file_type === "photo" ? "sendPhoto" : "sendDocument";
+          
+          const currentViews = Number(found.views || 0) + 1;
+          const caption = formatMovieCaption(found, currentViews);
+          
+          const sendOptions = {
+            caption: caption,
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+            protect_content: true,
+            disable_notification: false,
+          };
+          
+          if (found.poster_file_id) {
+            sendOptions.thumb = found.poster_file_id;
+          }
+          
+          console.log(`📤 Kino yuborilmoqda: ${found.name}`);
+          await bot[sendMethod](chatId, found.file_id, sendOptions);
+          console.log(`✅ Kino muvaffaqiyatli yuborildi`);
+          
+          // Menu tugmalarini yuboramiz
+          const menuOptions = {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }],
+                [{ text: "🔍 Kod bo'yicha qidirish", callback_data: "search_by_code" }],
+              ],
+            },
+          };
+          
+          if (userId === ADMIN_USER_ID || (await getAdminRole(userId))) {
+            menuOptions.reply_markup.inline_keyboard.push([
+              { text: "🔐 Admin paneli", callback_data: "admin_panel" },
+            ]);
+          }
+          
+          bot.sendMessage(chatId, "✅ Kino yuborildi! Yana qidirish uchun kod yuboring:", menuOptions);
+        } else {
+          console.log(`❌ Kino topilmadi: ${movieCode}`);
+          bot.sendMessage(chatId, `❌ "${movieCode}" kodi bilan kino topilmadi!`);
+        }
+        
+        // Holatni tozalaymiz
+        delete userStates[userId];
+      } else {
+        // Foydalanuvchi holatini tozalash - endi botdan foydalanishi mumkin
+        delete userStates[userId];
+        
+        // Start komandasi kabi ishlashi kerak
+        const startMsg = `Salom ${query.from.first_name} 👋\n\n@uzmoviesuz kanalining rasmiy botiga Xush kelibsiz! 😊\n\n🔑 Kino kodini yuboring yoki 🏆 Top kinolardan tanlang.`;
+        const options = {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🏆 Top kinolar", callback_data: "top_movies_0" }],
+            ],
+          },
+        };
+        
+        // Admin panel tugmasini qo'shamiz
+        if (userId === ADMIN_USER_ID || (await getAdminRole(userId))) {
+          options.reply_markup.inline_keyboard.push([
+            { text: "🔐 Admin paneli", callback_data: "admin_panel" },
+          ]);
+        }
+        
+        // Xabarni yangilaymiz
+        bot.editMessageText(startMsg, {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+          parse_mode: "HTML",
+          ...options,
+        });
       }
-      bot.editMessageText(startMsg, {
-        chat_id: chatId,
-        message_id: query.message.message_id,
-        parse_mode: "HTML",
-        ...options,
-      });
     } else {
       const unsubscribedChannels = await getUnsubscribedChannels(userId);
       const subButtons = await getSubscriptionButtons(userId);
