@@ -124,6 +124,11 @@ bot.on("polling_error", (error) => {
   console.error("❌ Polling xatosi:", error);
 });
 
+// Kino uchun standart format
+function formatMovieCaption(movie, views) {
+  return `${movie.description || ''}\n\n🔒 Kod: ${movie.code}\n👁️ Jami ko'rishlar: ${views || 0} ta`;
+}
+
 // Graceful shutdown
 process.on("SIGINT", async () => {
   console.log("Shutting down...");
@@ -146,11 +151,10 @@ async function saveMovieWithPoster(
   fileType,
   movieName,
   movieCode,
-  posterFileId,
+  description = null,
   msgOrQuery,
   chatId,
   userId,
-  description = null,
   movieGenre = null,
   movieYear = null,
   movieLanguage = null,
@@ -180,11 +184,6 @@ async function saveMovieWithPoster(
       protect_content: true,
     };
 
-    // Agar oblashka bo'lsa qo'shish
-    if (posterFileId) {
-      sendOptions.thumb = posterFileId;
-    }
-
     const sentMessage = await bot[sendMethod](
       MOVIES_CHANNEL_ID,
       fileId,
@@ -198,7 +197,7 @@ async function saveMovieWithPoster(
       description,
       fileId,
       fileType,
-      posterFileId || null,
+      null, // posterFileId
       userId,
       movieGenre,
       movieYear,
@@ -208,9 +207,6 @@ async function saveMovieWithPoster(
     );
 
     let successMsg = `✨ Kino muvaffaqiyatli saqlandi!\n\n🎬 <b>${movieName}</b>\n🔑 Kod: <code>${movieCode}</code>`;
-    if (posterFileId) {
-      successMsg += `\n🎨 Obloshka qo'shildi`;
-    }
     successMsg += `\n\nFoydalanuvchilar bu kodi yuborsalar, kino ularni keladi!`;
 
     const messageOptions = {
@@ -1151,8 +1147,11 @@ bot.on("message", async (msg) => {
       const sendMethod = found.file_type === "video" ? "sendVideo" : 
                        found.file_type === "photo" ? "sendPhoto" : "sendDocument";
       
+      const currentViews = Number(found.views || 0) + 1;
+      const caption = formatMovieCaption(found, currentViews);
+      
       const sendOptions = {
-        caption: `🎬 <b>${found.name}</b>\n🔑 Kod: <code>${found.code}</code>\n🎭 Janr: ${found.genre || "Noma'lum"}\n📅 Yili: ${found.year || "Noma'lum"}\n🌍 Tili: ${found.language || "Noma'lum"}\n⏱️ Davomiyligi: ${found.duration || "Noma'lum"}\n⏰ Sana: ${new Date(found.uploaded_at).toLocaleString("uz-UZ")}\n\n🤖 @${process.env.BOT_USERNAME || 'kino_bot'} orqali yuklangan`,
+        caption: caption,
         parse_mode: "HTML",
         disable_web_page_preview: true,
         protect_content: true,
@@ -1163,17 +1162,9 @@ bot.on("message", async (msg) => {
         sendOptions.thumb = found.poster_file_id;
       }
       
-      bot[sendMethod](chatId, found.file_id, sendOptions);
+      await bot[sendMethod](chatId, found.file_id, sendOptions);
       
-      // Orqaga qaytish tugmasi
-      const returnTo = userState.return_to || "top_movies_0";
-      bot.sendMessage(chatId, "✅ Kino topildi! Yana qidirish uchun kod yuboring:", {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "🔙 Orqaga", callback_data: returnTo }
-          ]]
-        }
-      });
+      bot.sendMessage(chatId, "✅ Kino topildi! Yana qidirish uchun kod yuboring:");
     } else {
       bot.sendMessage(chatId, `❌ "${movieCode}" kodi bilan kino topilmadi!`, {
         reply_markup: {
@@ -1236,13 +1227,15 @@ bot.on("message", async (msg) => {
 
       // Use description if provided; fallback to old "genre" value for previously saved items
       const effectiveDescription = found.description || found.genre;
-      const caption = effectiveDescription
-        ? `${effectiveDescription}\n\n🔑 Kod: <code>${found.code}</code>\n\n👁️ ${viewsToShow}`
-        : `🎬 <b>${found.name}</b>\n\n🎭 Janr: ${found.genre || "Noma'lum"}\n📅 Yili: ${found.year || "Noma'lum"}\n🌍 Tili: ${found.language || "Noma'lum"}\n⏱️ Davomiyligi: ${found.duration || "Noma'lum"}\n\n🔑 Kod: <code>${found.code}</code>`;
+      const caption = formatMovieCaption(found, viewsToShow);
 
       const sendOptions = {
         caption: caption,
         parse_mode: "HTML",
+        disable_web_page_preview: true,
+        protect_content: true,
+        disable_notification: false,
+        disable_web_page_preview: true,
       };
 
       // Agar obloshka bo'lsa qo'shish
@@ -1659,8 +1652,12 @@ bot.on("callback_query", async (query) => {
       const sendMethod = movie.file_type === "video" ? "sendVideo" : 
                        movie.file_type === "photo" ? "sendPhoto" : "sendDocument";
       
+      // Yangi formatdagi caption
+      const currentViews = Number(movie.views || 0) + 1;
+      const caption = formatMovieCaption(movie, currentViews);
+      
       const sendOptions = {
-        caption: `🎬 <b>${movie.name}</b>\n🔑 Kod: <code>${movie.code}</code>\n🎭 Janr: ${movie.genre || "Noma'lum"}\n📅 Yili: ${movie.year || "Noma'lum"}\n🌍 Tili: ${movie.language || "Noma'lum"}\n⏱️ Davomiyligi: ${movie.duration || "Noma'lum"}\n⏰ Sana: ${new Date(movie.uploaded_at).toLocaleString("uz-UZ")}\n\n🤖 @${process.env.BOT_USERNAME || 'uzmoviesuzbot'} orqali yuklangan`,
+        caption: caption,
         parse_mode: "HTML",
         disable_web_page_preview: true,
         protect_content: true,
