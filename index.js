@@ -847,7 +847,14 @@ bot.on("message", async (msg) => {
       bot.sendMessage(
         chatId,
         `✅ Kino o'chirildi: <b>${movie.name}</b>\n🔑 Kod: <code>${movie.code}</code>`,
-        { parse_mode: "HTML", ...mainMenuOptions },
+        { 
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔐 Admin paneli", callback_data: "admin_panel" }],
+            ],
+          },
+        },
       );
     } else {
       bot.sendMessage(chatId, "❌ Kino o'chirilmadi — ichki xato yuz berdi.");
@@ -1618,13 +1625,6 @@ bot.on("callback_query", async (query) => {
       return;
     }
 
-    let movieList = "🗑️ <b>Kino o'chirish</b> — Kino kodini yuboring:\n\n";
-    movies.forEach((m, idx) => {
-      movieList += `${idx + 1}. <b>${m.name}</b> — 🔑 <code>${m.code}</code>\n`;
-    });
-    movieList +=
-      "\n🔎 Iltimos o'chirmoqchi bo'lgan kinoning `kod`ini yuboring.";
-
     const options = {
       reply_markup: {
         inline_keyboard: [
@@ -1637,7 +1637,7 @@ bot.on("callback_query", async (query) => {
     // Set state so next text message is treated as delete-code
     userStates[userId] = { status: "waiting_delete_code" };
 
-    bot.editMessageText(movieList, {
+    bot.editMessageText("🗑️ <b>Kino o'chirish</b>\n\n🔎 Iltimos o'chirmoqchi bo'lgan kinoning kodini yuboring:", {
       chat_id: chatId,
       message_id: query.message.message_id,
       parse_mode: "HTML",
